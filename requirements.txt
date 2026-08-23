@@ -1,0 +1,8 @@
+# 台股分點大數據量化分析與雷達系統 (Stock Data Analysis) 依賴清單
+pandas>=2.0.0
+numpy>=1.24.0
+duckdb>=0.9.0
+pyarrow>=14.0.0
+openpyxl>=3.1.0
+requests>=2.28.0
+beautifulsoup4>=4.12.0

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.tmp
+20260822分點資料/*.parquet
+20260822分點資料/*.xlsx
+output/*.parquet
+output/*.xlsx
+output/*.csv
