@@ -11,17 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: "回溯分析交易天數 (預設: 5)"
+        description: "回溯分析最大交易天數 (預設: 60，自動切分 5日/20日/60日 三週期)"
         required: false
-        default: "5"
-      min_amt:
-        description: "最小淨買超金額門檻 (億元，預設: 0.3)"
-        required: false
-        default: "0.3"
-      min_ratio:
-        description: "最小買進純度佔比 (預設: 70)"
-        required: false
-        default: "70"
+        default: "60"
 
 jobs:
   run-daily-report:
@@ -63,8 +55,6 @@ jobs:
         run: |
           python main_cloud_runner.py \
             --lookback-days $INPUT_LOOKBACK_DAYS \
-            --min-amt $INPUT_MIN_AMT \
-            --min-ratio $INPUT_MIN_RATIO \
             --output-dir ./daily_reports
 
       - name: 保存產出報表 (僅 HTML 與 Excel)

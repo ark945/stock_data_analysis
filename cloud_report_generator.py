@@ -152,58 +152,110 @@ def generate_html_email_report(
     
     top_df = df.head(15) if not df.empty else pd.DataFrame()
 
-    table_rows_html = ""
+def generate_single_table_html(top_df: pd.DataFrame) -> str:
+    """生成單一週期的表格 HTML"""
     if top_df.empty:
-        table_rows_html = '<tr><td colspan="7" style="text-align:center; padding: 20px; color: #888;">今日無符合重押門檻之標的</td></tr>'
-    else:
-        for idx, row in top_df.iterrows():
-            rank = idx + 1
-            rank_badge_bg = "#ff4d4f" if rank <= 3 else "#1890ff" if rank <= 5 else "#6b7280"
-            
-            # 特徵標籤判斷 (強制 inline-block 與 nowrap 防止字串折行)
-            tags = []
-            tag_style = 'display: inline-block; white-space: nowrap; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px; margin-top: 3px;'
-            if row["buy_ratio_pct"] >= 85:
-                tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">🎯 絕對鎖碼</span>')
-            if row["buy_days"] >= 3:
-                tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
-            if row["net_amt_yi"] >= 1.0:
-                tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
-            
-            tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:3px;">標準吸籌</span>'
+        return '<tr><td colspan="7" style="text-align:center; padding: 18px; color: #888;">此週期無符合重押門檻之標的</td></tr>'
 
-            table_rows_html += f"""
-            <tr style="border-bottom: 1px solid #f0f0f0; transition: background 0.2s;">
-                <td style="padding: 12px 8px; text-align: center; white-space: nowrap;">
-                    <span style="background-color: {rank_badge_bg}; color: #ffffff; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;">{rank}</span>
-                </td>
-                <td style="padding: 12px 10px; min-width: 200px;">
-                    <div style="font-weight: bold; font-size: 15px; color: #111827; white-space: nowrap;">{row['股票標的']}</div>
-                    <div style="margin-top: 4px; white-space: nowrap;">{tag_html}</div>
-                </td>
-                <td style="padding: 12px 10px; min-width: 150px; white-space: nowrap;">
-                    <div style="font-weight: 600; color: #1e40af; font-size: 14px;">{row['主力分點']}</div>
-                    <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">進出 {row['trade_days']} 天 / 買超 {row['buy_days']} 天</div>
-                </td>
-                <td style="padding: 12px 10px; text-align: right; min-width: 130px; white-space: nowrap;">
-                    <div style="font-weight: bold; font-size: 15px; color: #dc2626;">+{row['net_amt_yi']:,.2f} 億</div>
-                    <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">買進總額 {row['buy_amt_yi']:,.2f} 億</div>
-                </td>
-                <td style="padding: 12px 10px; text-align: right; min-width: 120px; white-space: nowrap;">
-                    <div style="font-weight: bold; font-size: 14px; color: #1f2937;">{row['net_vol_sheets']:,.1f} 張</div>
-                    <div style="font-size: 12px; color: #059669; font-weight: 600; margin-top: 2px;">純度 {row['buy_ratio_pct']:.1f}%</div>
-                </td>
-                <td style="padding: 12px 10px; text-align: right; min-width: 100px; white-space: nowrap;">
-                    <div style="font-weight: bold; font-size: 14px; color: #374151;">${row['buy_avg_price']:,.2f}</div>
-                    <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">主力成本均價</div>
-                </td>
-                <td style="padding: 12px 8px; text-align: center; min-width: 75px; white-space: nowrap;">
-                    <div style="display: inline-block; background-color: #eff6ff; color: #1d4ed8; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 13px;">
-                        {row['score']} 分
-                    </div>
-                </td>
-            </tr>
-            """
+    table_rows_html = ""
+    for idx, row in top_df.reset_index(drop=True).iterrows():
+        rank = idx + 1
+        rank_badge_bg = "#ff4d4f" if rank <= 3 else "#1890ff" if rank <= 5 else "#6b7280"
+        
+        tags = []
+        tag_style = 'display: inline-block; white-space: nowrap; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px; margin-top: 2px;'
+        if row["buy_ratio_pct"] >= 85:
+            tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">🎯 絕對鎖碼</span>')
+        if row["buy_days"] >= 3:
+            tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
+        if row["net_amt_yi"] >= 1.0:
+            tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
+        
+        tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:2px;">標準吸籌</span>'
+
+        table_rows_html += f"""
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+            <td style="padding: 10px 8px; text-align: center; white-space: nowrap;">
+                <span style="background-color: {rank_badge_bg}; color: #ffffff; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: bold;">{rank}</span>
+            </td>
+            <td style="padding: 10px; min-width: 190px;">
+                <div style="font-weight: bold; font-size: 14px; color: #111827; white-space: nowrap;">{row['股票標的']}</div>
+                <div style="margin-top: 2px; white-space: nowrap;">{tag_html}</div>
+            </td>
+            <td style="padding: 10px; min-width: 150px; white-space: nowrap;">
+                <div style="font-weight: 600; color: #1e40af; font-size: 13px;">{row['主力分點']}</div>
+                <div style="font-size: 11px; color: #6b7280;">進出 {row['trade_days']} 天 / 買超 {row['buy_days']} 天</div>
+            </td>
+            <td style="padding: 10px; text-align: right; min-width: 120px; white-space: nowrap;">
+                <div style="font-weight: bold; font-size: 14px; color: #dc2626;">+{row['net_amt_yi']:,.2f} 億</div>
+                <div style="font-size: 11px; color: #6b7280;">買總額 {row['buy_amt_yi']:,.2f} 億</div>
+            </td>
+            <td style="padding: 10px; text-align: right; min-width: 110px; white-space: nowrap;">
+                <div style="font-weight: bold; font-size: 13px; color: #1f2937;">{row['net_vol_sheets']:,.1f} 張</div>
+                <div style="font-size: 11px; color: #059669; font-weight: 600;">純度 {row['buy_ratio_pct']:.1f}%</div>
+            </td>
+            <td style="padding: 10px; text-align: right; min-width: 95px; white-space: nowrap;">
+                <div style="font-weight: bold; font-size: 13px; color: #374151;">${row['buy_avg_price']:,.2f}</div>
+                <div style="font-size: 10px; color: #9ca3af;">主力成本均價</div>
+            </td>
+            <td style="padding: 10px 8px; text-align: center; min-width: 70px; white-space: nowrap;">
+                <div style="display: inline-block; background-color: #eff6ff; color: #1d4ed8; padding: 3px 6px; border-radius: 5px; font-weight: bold; font-size: 12px;">
+                    {row['score']} 分
+                </div>
+            </td>
+        </tr>
+        """
+    return table_rows_html
+
+
+def generate_multi_period_html_report(
+    reports_dict: Dict[str, pd.DataFrame],
+    latest_date: str = "",
+    report_title: str = "台股主力三週期連續重押吸籌雷達日報"
+) -> str:
+    """生成包含 5日 (短線)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    sections_html = ""
+    period_configs = [
+        ("5d", "🚀 【短線點火雷達】近 5 日主力快速建倉 (週線 TOP 10)", "#2563eb", "適合尋找剛進場點火、連買 3 天以上之初升段飆股"),
+        ("20d", "⭐ 【黃金波段認養】近 20 日主力深度重押 (月線 TOP 10 ⭐川湖核心模型)", "#d97706", "籌碼沉澱最完整、主力成本均價最精準之主力飆股"),
+        ("60d", "💎 【季線超級大戶】近 60 日大波段鎖碼 (季線 TOP 10)", "#7c3aed", "億元級超級大戶數月默默吃貨、籌碼徹底鎖定之長波飆股")
+    ]
+
+    for key, title, theme_color, desc in period_configs:
+        sub_df = reports_dict.get(key, pd.DataFrame()).head(10)
+        rows_html = generate_single_table_html(sub_df)
+        
+        sections_html += f"""
+        <div style="margin-bottom: 28px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #ffffff;">
+            <div style="background-color: #f8fafc; padding: 14px 18px; border-bottom: 2px solid {theme_color}; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                <div>
+                    <div style="font-size: 15px; font-weight: 800; color: #0f172a;">{title}</div>
+                    <div style="font-size: 12px; color: #64748b; margin-top: 2px;">{desc}</div>
+                </div>
+            </div>
+
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+                    <thead>
+                        <tr style="background-color: #f1f5f9; color: #475569; font-weight: 700; border-bottom: 1px solid #cbd5e1;">
+                            <th style="padding: 8px; text-align: center; width: 40px; white-space: nowrap;">排名</th>
+                            <th style="padding: 8px 10px; min-width: 190px; white-space: nowrap;">股票標的 / 吸籌特徵</th>
+                            <th style="padding: 8px 10px; min-width: 150px; white-space: nowrap;">主力券商分點</th>
+                            <th style="padding: 8px 10px; text-align: right; min-width: 120px; white-space: nowrap;">淨買超金額</th>
+                            <th style="padding: 8px 10px; text-align: right; min-width: 110px; white-space: nowrap;">淨買張數 / 純度</th>
+                            <th style="padding: 8px 10px; text-align: right; min-width: 95px; white-space: nowrap;">主力買均價</th>
+                            <th style="padding: 8px; text-align: center; min-width: 70px; white-space: nowrap;">吸籌評分</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        """
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-TW">
@@ -213,57 +265,31 @@ def generate_html_email_report(
     <title>{report_title}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Microsoft JhengHei', sans-serif;">
-    <div style="max-width: 900px; margin: 24px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e5e7eb;">
+    <div style="max-width: 920px; margin: 20px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e5e7eb;">
         
         <!-- Header 區塊 -->
-        <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding: 28px 24px; color: #ffffff; border-bottom: 4px solid #3b82f6;">
+        <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding: 26px 24px; color: #ffffff; border-bottom: 4px solid #3b82f6;">
             <div>
-                <span style="background-color: #3b82f6; color: #ffffff; font-size: 12px; font-weight: bold; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.5px;">
-                    QUANT RADAR REPORT
+                <span style="background-color: #3b82f6; color: #ffffff; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 16px; letter-spacing: 0.5px;">
+                    MULTI-PERIOD QUANT RADAR
                 </span>
                 <h1 style="margin: 10px 0 6px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">
-                    🚀 {report_title}
+                    🚀 {report_title} ({latest_date})
                 </h1>
                 <p style="margin: 0; font-size: 13px; color: #94a3b8;">
-                    核心模型：川湖 (2059) + 凱基-三多 (9275) 重押波段吸籌複製雷達
+                    三維度同步掃描：近 5 日短線點火 ＋ 近 20 日月波段認養 (川湖模型) ＋ 近 60 日季線大戶鎖碼
                 </p>
             </div>
             
-            <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 13px; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px;">
-                <span>📅 數據區間：<strong>{scan_period}</strong> (掃描 {summary.get('scan_files_count', 0)} 個日檔案)</span>
+            <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px;">
                 <span>⏱ 產出時間：<strong>{now_str}</strong></span>
+                <span>📎 附件：隨信附上三週期完整 Excel 複盤明細 (內含 3 個工作表)</span>
             </div>
         </div>
 
-        <!-- TOP 15 重押飆股雷達表格 -->
-        <div style="padding: 20px 24px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-                <div style="font-size: 16px; font-weight: 800; color: #0f172a;">
-                    🔥 核心主力重押排行榜 (TOP 15 精選)
-                </div>
-                <div style="font-size: 12px; color: #64748b;">
-                    依波段淨買超金額排序
-                </div>
-            </div>
-
-            <div style="overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
-                    <thead>
-                        <tr style="background-color: #f1f5f9; color: #475569; font-weight: 700; border-bottom: 2px solid #cbd5e1;">
-                            <th style="padding: 10px 8px; text-align: center; width: 45px; white-space: nowrap;">排名</th>
-                            <th style="padding: 10px; min-width: 200px; white-space: nowrap;">股票標的 / 吸籌特徵</th>
-                            <th style="padding: 10px; min-width: 150px; white-space: nowrap;">主力券商分點</th>
-                            <th style="padding: 10px; text-align: right; min-width: 130px; white-space: nowrap;">淨買超金額</th>
-                            <th style="padding: 10px; text-align: right; min-width: 120px; white-space: nowrap;">淨買張數 / 純度</th>
-                            <th style="padding: 10px; text-align: right; min-width: 100px; white-space: nowrap;">主力買均價</th>
-                            <th style="padding: 10px 8px; text-align: center; min-width: 75px; white-space: nowrap;">吸籌評分</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {table_rows_html}
-                    </tbody>
-                </table>
-            </div>
+        <!-- 主體內容 (3 個週期排行榜) -->
+        <div style="padding: 24px 20px 10px 20px;">
+            {sections_html}
         </div>
 
         <!-- 說明與附件提示 (操盤白話文指南) -->
@@ -272,13 +298,13 @@ def generate_html_email_report(
             <ul style="margin: 0; padding-left: 18px;">
                 <li><strong>買進純度（%）</strong>：主力進出的 100 張裡面，買進佔了幾張。純度超過 <strong>75%（7成5）</strong> 代表主力「只買不賣、真心吃貨」，不是當沖客！</li>
                 <li><strong>主力買均價</strong>：這段期間大戶買進的「平均每股成本」。只要股價回到這個價位附近，主力通常會強力護盤防守。</li>
-                <li><strong>完整明細</strong>：全市場所有符合條件的個股已整理在隨信附上的 <strong>Excel 檔案</strong>，可直接下載打開複盤！</li>
+                <li><strong>完整明細</strong>：全市場所有符合條件的個股已整理在隨信附上的 <strong>Excel 檔案</strong>（內含 5日、20日、60日 三個工作表），可直接下載打開複盤！</li>
             </ul>
         </div>
 
         <!-- Footer -->
-        <div style="padding: 18px 28px; background-color: #0f172a; text-align: center; font-size: 12px; color: #94a3b8;">
-            台股量化分點分析系統 | 自動化報告引擎 · 系統自動發送請勿回覆
+        <div style="padding: 16px 24px; background-color: #0f172a; text-align: center; font-size: 12px; color: #94a3b8;">
+            台股量化分點分析系統 | 自動化多週期報告引擎 · 系統自動發送請勿回覆
         </div>
 
     </div>
@@ -288,8 +314,48 @@ def generate_html_email_report(
     return html
 
 
+def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_excel_path: str):
+    """匯出包含 5日、20日、60日 三個工作表的 Excel (.xlsx)"""
+    sheet_name_map = {
+        "5d": "近5日短線點火",
+        "20d": "近20日月波段重押",
+        "60d": "近60日季線大戶"
+    }
+
+    export_cols = {
+        "股票標的": "股票標的",
+        "主力分點": "主力券商分點",
+        "first_date": "起算日期",
+        "last_date": "最新活躍日",
+        "trade_days": "進出天數",
+        "buy_days": "買超天數",
+        "buy_day_pct": "買超天數佔比(%)",
+        "buy_vol_sheets": "累計買進(張)",
+        "sell_vol_sheets": "累計賣出(張)",
+        "net_vol_sheets": "累計淨買超(張)",
+        "buy_ratio_pct": "買進純度佔比(%)",
+        "buy_avg_price": "買進均價/主力成本(元)",
+        "sell_avg_price": "賣出均價(元)",
+        "buy_amt_yi": "買進總額(億元)",
+        "net_amt_yi": "淨買超金額(億元)",
+        "score": "主力吸籌強度評分"
+    }
+
+    with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
+        for key, sheet_name in sheet_name_map.items():
+            df = reports_dict.get(key, pd.DataFrame())
+            if df.empty:
+                pd.DataFrame({"狀態": ["此週期無符合門檻之標的"]}).to_excel(writer, sheet_name=sheet_name, index=False)
+            else:
+                out_df = df[[c for c in export_cols.keys() if c in df.columns]].copy()
+                out_df.rename(columns=export_cols, inplace=True)
+                out_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    print(f"[✓] 三週期多工作表 Excel 報表已匯出至: {output_excel_path}")
+
+
 def generate_excel_report(df: pd.DataFrame, output_excel_path: str):
-    """匯出完整分析清單至 Excel (.xlsx)"""
+    """匯出單一分析清單至 Excel (.xlsx)"""
     if df.empty:
         pd.DataFrame({"狀態": ["本日無符合門檻之標的"]}).to_excel(output_excel_path, index=False)
         return
