@@ -160,43 +160,44 @@ def generate_html_email_report(
             rank = idx + 1
             rank_badge_bg = "#ff4d4f" if rank <= 3 else "#1890ff" if rank <= 5 else "#6b7280"
             
-            # 特徵標籤判斷
+            # 特徵標籤判斷 (強制 inline-block 與 nowrap 防止字串折行)
             tags = []
+            tag_style = 'display: inline-block; white-space: nowrap; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px; margin-top: 3px;'
             if row["buy_ratio_pct"] >= 85:
-                tags.append('<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px;">🎯 絕對鎖碼</span>')
+                tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">🎯 絕對鎖碼</span>')
             if row["buy_days"] >= 3:
-                tags.append('<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px;">🔥 連續吸籌</span>')
+                tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
             if row["net_amt_yi"] >= 1.0:
-                tags.append('<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold;">💰 億級重押</span>')
+                tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
             
-            tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px;">標準吸籌</span>'
+            tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:3px;">標準吸籌</span>'
 
             table_rows_html += f"""
             <tr style="border-bottom: 1px solid #f0f0f0; transition: background 0.2s;">
-                <td style="padding: 12px 10px; text-align: center;">
+                <td style="padding: 12px 8px; text-align: center; white-space: nowrap;">
                     <span style="background-color: {rank_badge_bg}; color: #ffffff; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;">{rank}</span>
                 </td>
-                <td style="padding: 12px 10px;">
-                    <div style="font-weight: bold; font-size: 15px; color: #111827;">{row['股票標的']}</div>
-                    <div style="margin-top: 4px;">{tag_html}</div>
+                <td style="padding: 12px 10px; min-width: 200px;">
+                    <div style="font-weight: bold; font-size: 15px; color: #111827; white-space: nowrap;">{row['股票標的']}</div>
+                    <div style="margin-top: 4px; white-space: nowrap;">{tag_html}</div>
                 </td>
-                <td style="padding: 12px 10px;">
+                <td style="padding: 12px 10px; min-width: 150px; white-space: nowrap;">
                     <div style="font-weight: 600; color: #1e40af; font-size: 14px;">{row['主力分點']}</div>
-                    <div style="font-size: 12px; color: #6b7280;">進出 {row['trade_days']} 天 / 買超 {row['buy_days']} 天</div>
+                    <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">進出 {row['trade_days']} 天 / 買超 {row['buy_days']} 天</div>
                 </td>
-                <td style="padding: 12px 10px; text-align: right;">
+                <td style="padding: 12px 10px; text-align: right; min-width: 130px; white-space: nowrap;">
                     <div style="font-weight: bold; font-size: 15px; color: #dc2626;">+{row['net_amt_yi']:,.2f} 億</div>
-                    <div style="font-size: 12px; color: #6b7280;">買進總額 {row['buy_amt_yi']:,.2f} 億</div>
+                    <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">買進總額 {row['buy_amt_yi']:,.2f} 億</div>
                 </td>
-                <td style="padding: 12px 10px; text-align: right;">
+                <td style="padding: 12px 10px; text-align: right; min-width: 120px; white-space: nowrap;">
                     <div style="font-weight: bold; font-size: 14px; color: #1f2937;">{row['net_vol_sheets']:,.1f} 張</div>
-                    <div style="font-size: 12px; color: #059669; font-weight: 600;">純度 {row['buy_ratio_pct']:.1f}%</div>
+                    <div style="font-size: 12px; color: #059669; font-weight: 600; margin-top: 2px;">純度 {row['buy_ratio_pct']:.1f}%</div>
                 </td>
-                <td style="padding: 12px 10px; text-align: right;">
+                <td style="padding: 12px 10px; text-align: right; min-width: 100px; white-space: nowrap;">
                     <div style="font-weight: bold; font-size: 14px; color: #374151;">${row['buy_avg_price']:,.2f}</div>
-                    <div style="font-size: 11px; color: #9ca3af;">主力成本均價</div>
+                    <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">主力成本均價</div>
                 </td>
-                <td style="padding: 12px 10px; text-align: center;">
+                <td style="padding: 12px 8px; text-align: center; min-width: 75px; white-space: nowrap;">
                     <div style="display: inline-block; background-color: #eff6ff; color: #1d4ed8; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 13px;">
                         {row['score']} 分
                     </div>
@@ -212,60 +213,36 @@ def generate_html_email_report(
     <title>{report_title}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Microsoft JhengHei', sans-serif;">
-    <div style="max-width: 860px; margin: 24px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e5e7eb;">
+    <div style="max-width: 900px; margin: 24px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e5e7eb;">
         
         <!-- Header 區塊 -->
-        <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding: 32px 28px; color: #ffffff; border-bottom: 4px solid #3b82f6;">
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-                <div>
-                    <span style="background-color: #3b82f6; color: #ffffff; font-size: 12px; font-weight: bold; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.5px;">
-                        QUANT RADAR REPORT
-                    </span>
-                    <h1 style="margin: 12px 0 6px 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">
-                        🚀 {report_title}
-                    </h1>
-                    <p style="margin: 0; font-size: 13px; color: #94a3b8;">
-                        核心模型：川湖 (2059) + 凱基-三多 (9275) 重押波段吸籌複製雷達
-                    </p>
-                </div>
+        <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding: 28px 24px; color: #ffffff; border-bottom: 4px solid #3b82f6;">
+            <div>
+                <span style="background-color: #3b82f6; color: #ffffff; font-size: 12px; font-weight: bold; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.5px;">
+                    QUANT RADAR REPORT
+                </span>
+                <h1 style="margin: 10px 0 6px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">
+                    🚀 {report_title}
+                </h1>
+                <p style="margin: 0; font-size: 13px; color: #94a3b8;">
+                    核心模型：川湖 (2059) + 凱基-三多 (9275) 重押波段吸籌複製雷達
+                </p>
             </div>
             
-            <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 13px; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px;">
+            <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 13px; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px;">
                 <span>📅 數據區間：<strong>{scan_period}</strong> (掃描 {summary.get('scan_files_count', 0)} 個日檔案)</span>
                 <span>⏱ 產出時間：<strong>{now_str}</strong></span>
             </div>
         </div>
 
-        <!-- 關鍵指標 KPI 看板 -->
-        <div style="padding: 24px 28px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
-            <div style="font-size: 14px; font-weight: 700; color: #475569; margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.5px;">
-                📊 全市場主力重押總結看板
-            </div>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
-                <div style="background: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; text-align: center;">
-                    <div style="font-size: 12px; color: #64748b; font-weight: 600;">重押個股檔數</div>
-                    <div style="font-size: 24px; font-weight: 800; color: #1e293b; margin-top: 6px;">{summary.get('unique_stocks', 0)} <span style="font-size: 13px; font-weight: normal; color: #64748b;">檔</span></div>
-                </div>
-                <div style="background: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; text-align: center;">
-                    <div style="font-size: 12px; color: #64748b; font-weight: 600;">主力重押總金額</div>
-                    <div style="font-size: 24px; font-weight: 800; color: #dc2626; margin-top: 6px;">${summary.get('total_heavy_amt_yi', 0):,.2f} <span style="font-size: 13px; font-weight: normal; color: #64748b;">億</span></div>
-                </div>
-                <div style="background: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; text-align: center;">
-                    <div style="font-size: 12px; color: #64748b; font-weight: 600;">最大單一吸籌標的</div>
-                    <div style="font-size: 18px; font-weight: 800; color: #2563eb; margin-top: 8px;">{summary.get('top_stock', '無')}</div>
-                    <div style="font-size: 12px; color: #dc2626; margin-top: 2px;">+{summary.get('top_amt_yi', 0):.2f} 億 ({summary.get('top_broker', '')})</div>
-                </div>
-            </div>
-        </div>
-
         <!-- TOP 15 重押飆股雷達表格 -->
-        <div style="padding: 24px 28px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <div style="padding: 20px 24px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
                 <div style="font-size: 16px; font-weight: 800; color: #0f172a;">
                     🔥 核心主力重押排行榜 (TOP 15 精選)
                 </div>
                 <div style="font-size: 12px; color: #64748b;">
-                    依淨買超金額排序
+                    依波段淨買超金額排序
                 </div>
             </div>
 
@@ -273,13 +250,13 @@ def generate_html_email_report(
                 <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
                     <thead>
                         <tr style="background-color: #f1f5f9; color: #475569; font-weight: 700; border-bottom: 2px solid #cbd5e1;">
-                            <th style="padding: 10px; text-align: center; width: 45px;">排名</th>
-                            <th style="padding: 10px;">股票標的 / 特徵</th>
-                            <th style="padding: 10px;">主力券商分點</th>
-                            <th style="padding: 10px; text-align: right;">淨買超金額</th>
-                            <th style="padding: 10px; text-align: right;">淨買張數 / 純度</th>
-                            <th style="padding: 10px; text-align: right;">主力買均價</th>
-                            <th style="padding: 10px; text-align: center;">吸籌評分</th>
+                            <th style="padding: 10px 8px; text-align: center; width: 45px; white-space: nowrap;">排名</th>
+                            <th style="padding: 10px; min-width: 200px; white-space: nowrap;">股票標的 / 吸籌特徵</th>
+                            <th style="padding: 10px; min-width: 150px; white-space: nowrap;">主力券商分點</th>
+                            <th style="padding: 10px; text-align: right; min-width: 130px; white-space: nowrap;">淨買超金額</th>
+                            <th style="padding: 10px; text-align: right; min-width: 120px; white-space: nowrap;">淨買張數 / 純度</th>
+                            <th style="padding: 10px; text-align: right; min-width: 100px; white-space: nowrap;">主力買均價</th>
+                            <th style="padding: 10px 8px; text-align: center; min-width: 75px; white-space: nowrap;">吸籌評分</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -289,13 +266,13 @@ def generate_html_email_report(
             </div>
         </div>
 
-        <!-- 說明與附件提示 -->
-        <div style="padding: 18px 28px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b; line-height: 1.6;">
-            <div style="font-weight: bold; color: #334155; margin-bottom: 4px;">💡 模型解讀指引：</div>
-            <ul style="margin: 0; padding-left: 20px;">
-                <li><strong>買進純度佔比</strong>：主力總買進股數佔該分點該股總進出量（買+賣）之比例，$\ge 75\%$ 代表純多單鎖碼。</li>
-                <li><strong>主力買均價</strong>：波段累計買進之加權平均成本，若現價接近成本區且主力未出貨，具備極高防守與拉抬動能。</li>
-                <li><strong>完整資料</strong>：全市場所有符合篩選之完整明細已自動匯出為 Excel 檔案隨信附上，歡迎下載複盤。</li>
+        <!-- 說明與附件提示 (操盤白話文指南) -->
+        <div style="padding: 16px 24px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b; line-height: 1.6;">
+            <div style="font-weight: bold; color: #334155; margin-bottom: 6px;">💡 操盤白話文快速看懂：</div>
+            <ul style="margin: 0; padding-left: 18px;">
+                <li><strong>買進純度（%）</strong>：主力進出的 100 張裡面，買進佔了幾張。純度超過 <strong>75%（7成5）</strong> 代表主力「只買不賣、真心吃貨」，不是當沖客！</li>
+                <li><strong>主力買均價</strong>：這段期間大戶買進的「平均每股成本」。只要股價回到這個價位附近，主力通常會強力護盤防守。</li>
+                <li><strong>完整明細</strong>：全市場所有符合條件的個股已整理在隨信附上的 <strong>Excel 檔案</strong>，可直接下載打開複盤！</li>
             </ul>
         </div>
 
