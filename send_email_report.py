@@ -89,7 +89,9 @@ def send_email_report(
     ).strip()
     if not recipients:
         if raw_recipients:
-            recipients = [r.strip() for r in raw_recipients.split(",") if r.strip()]
+            import re
+            # 支援英文逗號(,)、英文分號(;)、中文逗號(，)、中文分號(；) 與換行符號
+            recipients = [r.strip() for r in re.split(r"[,;，；\n]+", raw_recipients) if r.strip()]
         else:
             recipients = [mail_user] if mail_user else []
 
