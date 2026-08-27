@@ -9,11 +9,6 @@ on:
     # 每日 20:07 (台灣時間，即 UTC 12:07) 避開整點高峰，自動執行全市場分點分析與郵件發送
     - cron: "7 12 * * 1-5"
   workflow_dispatch:
-    inputs:
-      lookback_days:
-        description: "回溯分析最大交易天數 (預設: 60，自動切分 5日/20日/60日 三週期)"
-        required: false
-        default: "60"
 
 jobs:
   run-daily-report:
@@ -53,9 +48,7 @@ jobs:
           INPUT_MIN_AMT: ${{ github.event.inputs.min_amt || '0.3' }}
           INPUT_MIN_RATIO: ${{ github.event.inputs.min_ratio || '70' }}
         run: |
-          python main_cloud_runner.py \
-            --lookback-days $INPUT_LOOKBACK_DAYS \
-            --output-dir ./daily_reports
+          python main_cloud_runner.py --output-dir ./daily_reports
 
       - name: 保存產出報表 (僅 HTML 與 Excel)
         if: always()
