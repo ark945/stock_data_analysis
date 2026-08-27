@@ -93,10 +93,21 @@ def get_stock_name_map() -> Dict[str, str]:
 
 
 def get_broker_name_map() -> Dict[str, str]:
-    """取得券商分點代碼對應名稱字典"""
+    """取得券商分點代碼對應中文名稱字典 (優先讀取專案快取)"""
+    cache_path = os.path.join(os.path.dirname(__file__), "broker_name_map.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                b_map = json.load(f)
+                if len(b_map) > 100:
+                    return b_map
+        except Exception:
+            pass
+
     candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "StockBrokerPriceCorrelation", "data", "taiwan_stcok_securities_trader_info.csv"),
+        cache_path,
         os.path.join(os.path.dirname(__file__), "taiwan_stcok_securities_trader_info.csv"),
+        os.path.join(os.path.dirname(__file__), "..", "StockBrokerPriceCorrelation", "data", "taiwan_stcok_securities_trader_info.csv"),
         "d:/MyProject/StockBrokerPriceCorrelation/data/taiwan_stcok_securities_trader_info.csv"
     ]
     broker_map = {}
@@ -113,6 +124,14 @@ def get_broker_name_map() -> Dict[str, str]:
                     break
             except Exception:
                 pass
+
+    if len(broker_map) > 50:
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(broker_map, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
     return broker_map
 
 
