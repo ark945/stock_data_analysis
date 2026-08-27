@@ -9,6 +9,22 @@ on:
     # 每日 20:07 (台灣時間，即 UTC 12:07) 避開整點高峰，自動執行全市場分點分析與郵件發送
     - cron: "7 12 * * 1-5"
   workflow_dispatch:
+    # =========================================================================
+    # 【備用自訂參數區塊】若未來想恢復手動輸入自訂天數與門檻，解除下方註解即可：
+    # =========================================================================
+    # inputs:
+    #   lookback_days:
+    #     description: "回溯分析交易天數 (預設: 5)"
+    #     required: false
+    #     default: "5"
+    #   min_amt:
+    #     description: "最小淨買超金額門檻 (億元，預設: 0.3)"
+    #     required: false
+    #     default: "0.3"
+    #   min_ratio:
+    #     description: "最小買進純度佔比 (預設: 70)"
+    #     required: false
+    #     default: "70"
 
 jobs:
   run-daily-report:
