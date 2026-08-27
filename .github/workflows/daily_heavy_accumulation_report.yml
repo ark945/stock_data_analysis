@@ -6,8 +6,8 @@ env:
 
 on:
   schedule:
-    # 每日 18:30 (台灣時間，即 UTC 10:30) 執行全市場分點分析與郵件發送
-    - cron: "30 10 * * 1-5"
+    # 每日 20:07 (台灣時間，即 UTC 12:07) 避開整點高峰，自動執行全市場分點分析與郵件發送
+    - cron: "7 12 * * 1-5"
   workflow_dispatch:
     inputs:
       lookback_days:
