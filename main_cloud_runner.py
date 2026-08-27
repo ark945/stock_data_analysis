@@ -50,9 +50,10 @@ def main():
         parquet_files = sorted(glob.glob(os.path.join(args.local_dir, "*.parquet")))
     else:
         print(f"[*] 正在從 Google Drive 目標資料夾拉取近 {args.lookback_days} 日數據...")
+        cache_dir = "./temp_cache_parquet"
         parquet_files = download_recent_parquet_files(
             lookback_days=args.lookback_days,
-            dest_dir=os.path.join(args.output_dir, "cache_parquet")
+            dest_dir=cache_dir
         )
 
     if not parquet_files:

@@ -67,10 +67,12 @@ jobs:
             --min-ratio $INPUT_MIN_RATIO \
             --output-dir ./daily_reports
 
-      - name: 保存產出報表 Artifacts
+      - name: 保存產出報表 (僅 HTML 與 Excel)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: daily-heavy-accumulation-reports
-          path: ./daily_reports/
+          path: |
+            ./daily_reports/*.xlsx
+            ./daily_reports/*.html
           retention-days: 14
