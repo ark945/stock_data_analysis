@@ -1,0 +1,76 @@
+name: 每日台股主力重押日報 (川湖+凱基三多模型 Email 派發)
+
+env:
+  TZ: "Asia/Taipei"
+  PYTHONIOENCODING: "utf-8"
+
+on:
+  schedule:
+    # 每日 18:30 (台灣時間，即 UTC 10:30) 執行全市場分點分析與郵件發送
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "回溯分析交易天數 (預設: 5)"
+        required: false
+        default: "5"
+      min_amt:
+        description: "最小淨買超金額門檻 (億元，預設: 0.3)"
+        required: false
+        default: "0.3"
+      min_ratio:
+        description: "最小買進純度佔比 (預設: 70)"
+        required: false
+        default: "70"
+
+jobs:
+  run-daily-report:
+    name: 執行川湖模型分析並派送 Email 報告
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 檢出專案代碼 (Checkout)
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 安裝專案依賴
+        run: |
+          python -m pip install --upgrade pip
+          pip install duckdb pandas numpy openpyxl requests beautifulsoup4 google-api-python-client google-auth
+
+      - name: 執行雲端分析與派發 Email / Telegram
+        env:
+          GDRIVE_UPLOAD_URL: ${{ secrets.GDRIVE_UPLOAD_URL }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_LOG_FOLDER_ID: ${{ secrets.GDRIVE_LOG_FOLDER_ID }}
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          INPUT_LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '5' }}
+          INPUT_MIN_AMT: ${{ github.event.inputs.min_amt || '0.3' }}
+          INPUT_MIN_RATIO: ${{ github.event.inputs.min_ratio || '70' }}
+        run: |
+          python main_cloud_runner.py \
+            --lookback-days $INPUT_LOOKBACK_DAYS \
+            --min-amt $INPUT_MIN_AMT \
+            --min-ratio $INPUT_MIN_RATIO \
+            --output-dir ./daily_reports
+
+      - name: 保存產出報表 Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-heavy-accumulation-reports
+          path: ./daily_reports/
+          retention-days: 14
