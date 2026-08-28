@@ -5,6 +5,8 @@ __pycache__/
 20260822分點資料/*.xlsx
 output/*.parquet
 output/*.csv
+output/*.xlsx
+output/*.html
 .env
 daily_reports/
 cloud_data/

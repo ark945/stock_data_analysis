@@ -143,6 +143,7 @@ def scan_heavy_accumulation(
     min_trade_days: int = 10,              # 最少交易天數 (排除少數天數大宗短線)
     top_n: int = 30,
     sort_by: str = "amt",                  # 排序方式: "amt" (金額優先，預設) 或 "score" (純度評分優先)
+    ignition_threshold_ratio: float = 0.20,# 主力點火確認門檻比例 (預設 20% / 0.20)
     symbol_filter: Optional[str] = None,
     broker_filter: Optional[str] = None
 ) -> pd.DataFrame:
@@ -154,11 +155,12 @@ def scan_heavy_accumulation(
         print(f"[!] 於目錄 {data_dir} 未找到任何 Parquet 檔案。")
         return pd.DataFrame()
 
-    files = [f.replace("\\", "/") for f in raw_files]
+    absr1_files = [f.replace("\\", "/") for f in raw_files if "finmind" not in os.path.basename(f).lower()]
+    files = absr1_files if absr1_files else [f.replace("\\", "/") for f in raw_files]
     print(f"==================================================")
     print(f"[*] 主力波段吸籌雷達啟動 (川湖-凱基三多模式掃描)")
     print(f"[*] 掃描檔案數: {len(files)} 個交易日 (全市場分點資料)")
-    print(f"[*] 門檻條件: 淨買超 >= {min_net_amt_yi:.2f} 億元, 買進佔比 >= {min_buy_ratio_pct:.0f}%, 淨買超 >= {min_net_vol_sheets} 張, 交易天數 >= {min_trade_days} 天")
+    print(f"[*] 門檻條件: 淨買超 >= {min_net_amt_yi:.2f} 億元, 買進佔比 >= {min_buy_ratio_pct:.0f}%, 淨買超 >= {min_net_vol_sheets} 張, 交易天數 >= {min_trade_days} 天, 點火門檻 = {ignition_threshold_ratio*100:.0f}%")
     print(f"[*] 排序基準: {'【淨買超總金額優先】' if sort_by == 'amt' else '【吸籌純度評分優先】'}")
     print(f"==================================================")
     sys.stdout.flush()
@@ -175,7 +177,7 @@ def scan_heavy_accumulation(
         extra_filter += f" AND broker_id = '{broker_filter.strip()}'"
 
     sql = f"""
-    WITH filtered_trades AS (
+    WITH raw_trades AS (
         SELECT 
             symbol,
             broker_id,
@@ -190,12 +192,37 @@ def scan_heavy_accumulation(
         FROM read_parquet({files})
         WHERE (buy_amt >= 200 OR sell_amt >= 200){extra_filter}
     ),
-    agg AS (
+    daily_trades AS (
+        SELECT
+            symbol,
+            broker_id,
+            SUBSTRING(trade_date, 1, 10) AS trade_date,
+            SUM(buy_vol) AS buy_vol,
+            SUM(sell_vol) AS sell_vol,
+            SUM(net_vol) AS net_vol,
+            SUM(buy_amt) AS buy_amt,
+            SUM(sell_amt) AS sell_amt,
+            SUM(net_amt) AS net_amt,
+            MAX(is_buy_day) AS is_buy_day
+        FROM raw_trades
+        GROUP BY symbol, broker_id, SUBSTRING(trade_date, 1, 10)
+    ),
+    daily_cum AS (
+        SELECT
+            *,
+            SUM(net_amt) OVER (
+                PARTITION BY symbol, broker_id 
+                ORDER BY trade_date 
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS cum_net_amt
+        FROM daily_trades
+    ),
+    summary_per_pair AS (
         SELECT 
             symbol,
             broker_id,
-            SUBSTRING(MIN(trade_date), 1, 10) AS first_date,
-            SUBSTRING(MAX(trade_date), 1, 10) AS last_date,
+            MIN(trade_date) AS first_date,
+            MAX(trade_date) AS last_date,
             COUNT(DISTINCT trade_date) AS trade_days,
             SUM(is_buy_day) AS buy_days,
             SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
@@ -204,34 +231,49 @@ def scan_heavy_accumulation(
             SUM(buy_amt) / 10000.0 AS buy_amt_yi,
             SUM(sell_amt) / 10000.0 AS sell_amt_yi,
             SUM(net_amt) / 10000.0 AS net_amt_yi,
+            SUM(net_amt) AS total_net_amt_k,
             ROUND((SUM(buy_amt) * 1000.0) / NULLIF(SUM(buy_vol), 0), 2) AS buy_avg_price,
             ROUND((SUM(sell_amt) * 1000.0) / NULLIF(SUM(sell_vol), 0), 2) AS sell_avg_price,
             ROUND(SUM(buy_vol) * 100.0 / NULLIF(SUM(buy_vol) + SUM(sell_vol), 0), 1) AS buy_ratio_pct,
             ROUND(SUM(is_buy_day) * 100.0 / NULLIF(COUNT(DISTINCT trade_date), 0), 1) AS buy_day_pct
-        FROM filtered_trades
+        FROM daily_trades
         GROUP BY symbol, broker_id
+    ),
+    ignition_dates AS (
+        SELECT
+            d.symbol,
+            d.broker_id,
+            MIN(d.trade_date) AS ignition_date
+        FROM daily_cum d
+        JOIN summary_per_pair s ON d.symbol = s.symbol AND d.broker_id = s.broker_id
+        WHERE (
+            d.cum_net_amt >= (s.total_net_amt_k * {ignition_threshold_ratio})
+        )
+        GROUP BY d.symbol, d.broker_id
     )
     SELECT 
-        symbol,
-        broker_id,
-        first_date,
-        last_date,
-        trade_days,
-        buy_days,
-        buy_day_pct,
-        ROUND(buy_vol_sheets, 1) AS buy_vol_sheets,
-        ROUND(sell_vol_sheets, 1) AS sell_vol_sheets,
-        ROUND(net_vol_sheets, 1) AS net_vol_sheets,
-        buy_ratio_pct,
-        buy_avg_price,
-        sell_avg_price,
-        ROUND(buy_amt_yi, 2) AS buy_amt_yi,
-        ROUND(net_amt_yi, 2) AS net_amt_yi
-    FROM agg
-    WHERE net_amt_yi >= {min_net_amt_yi}
-      AND buy_ratio_pct >= {min_buy_ratio_pct}
-      AND net_vol_sheets >= {min_net_vol_sheets}
-      AND trade_days >= {min_trade_days}
+        s.symbol,
+        s.broker_id,
+        s.first_date,
+        COALESCE(i.ignition_date, s.first_date) AS ignition_date,
+        s.last_date,
+        s.trade_days,
+        s.buy_days,
+        s.buy_day_pct,
+        ROUND(s.buy_vol_sheets, 1) AS buy_vol_sheets,
+        ROUND(s.sell_vol_sheets, 1) AS sell_vol_sheets,
+        ROUND(s.net_vol_sheets, 1) AS net_vol_sheets,
+        s.buy_ratio_pct,
+        s.buy_avg_price,
+        s.sell_avg_price,
+        ROUND(s.buy_amt_yi, 2) AS buy_amt_yi,
+        ROUND(s.net_amt_yi, 2) AS net_amt_yi
+    FROM summary_per_pair s
+    LEFT JOIN ignition_dates i ON s.symbol = i.symbol AND s.broker_id = i.broker_id
+    WHERE s.net_amt_yi >= {min_net_amt_yi}
+      AND s.buy_ratio_pct >= {min_buy_ratio_pct}
+      AND s.net_vol_sheets >= {min_net_vol_sheets}
+      AND s.trade_days >= {min_trade_days}
     """
 
     res_df = duckdb.query(sql).to_df()
@@ -243,7 +285,12 @@ def scan_heavy_accumulation(
         return res_df
 
     res_df["first_date"] = res_df["first_date"].astype(str).str.slice(0, 10)
+    res_df["ignition_date"] = res_df["ignition_date"].astype(str).str.slice(0, 10)
     res_df["last_date"] = res_df["last_date"].astype(str).str.slice(0, 10)
+
+    ign_dt = pd.to_datetime(res_df["ignition_date"])
+    lst_dt = pd.to_datetime(res_df["last_date"])
+    res_df["accum_days"] = (lst_dt - ign_dt).dt.days + 1
 
     # 計算吸籌強度評分 Score (0 ~ 100 分)
     amt_score = np.clip(np.log10(np.maximum(1.0, res_df["net_amt_yi"] * 10000.0)) * 8.0, 0, 40.0)
@@ -255,7 +302,9 @@ def scan_heavy_accumulation(
     res_df["券商分點"] = res_df["broker_id"].apply(lambda b: f"{b}-{broker_names.get(b, '未知分點')}")
 
     chinese_col_map = {
-        "first_date": "起算日期",
+        "first_date": "資料區間起日",
+        "ignition_date": "主力點火起算日",
+        "accum_days": "吃貨歷時(天)",
         "last_date": "最新活躍日",
         "trade_days": "進出天數",
         "buy_days": "買超天數",
@@ -273,7 +322,7 @@ def scan_heavy_accumulation(
     res_df.rename(columns=chinese_col_map, inplace=True)
 
     ordered_cols = [
-        "股票標的", "券商分點", "起算日期", "最新活躍日", "進出天數",
+        "股票標的", "券商分點", "主力點火起算日", "吃貨歷時(天)", "資料區間起日", "最新活躍日", "進出天數",
         "買超天數", "買超天數佔比(%)", "累計買進(張)", "累計賣出(張)",
         "累計淨買超(張)", "買進純度佔比(%)", "買進均價/主力成本(元)",
         "賣出均價(元)", "買進總金額(億元)", "淨買超金額(億元)", "主力吸籌強度評分"
@@ -325,6 +374,7 @@ def main():
     parser.add_argument("--sort", type=str, default="amt", choices=["amt", "score"], help="排序方式: amt (淨買金額優先，預設) 或 score (純度評分優先)")
     parser.add_argument("--symbol", type=str, default=None, help="指定查詢特定股票 (例: 2059)")
     parser.add_argument("--broker", type=str, default=None, help="指定查詢特定券商分點 (例: 9275)")
+    parser.add_argument("--ignition-ratio", type=float, default=0.20, help="主力點火確認門檻比例 (預設 0.20 即 20%)")
     parser.add_argument("--top", type=int, default=30, help="輸出前幾大名單 (預設 30)")
     parser.add_argument("--output", type=str, default=None, help="輸出報告路徑 (.xlsx 或 .csv)")
 
@@ -354,6 +404,7 @@ def main():
         min_trade_days=args.min_days,
         top_n=args.top,
         sort_by=args.sort,
+        ignition_threshold_ratio=args.ignition_ratio,
         symbol_filter=args.symbol,
         broker_filter=args.broker
     )
@@ -364,10 +415,11 @@ def main():
         print("=" * 115)
         
         display_cols = [
-            "股票標的", "券商分點", "起算日期", "最新活躍日", "進出天數",
+            "股票標的", "券商分點", "主力點火起算日", "吃貨歷時(天)", "資料區間起日", "最新活躍日", "進出天數",
             "累計買進(張)", "累計淨買超(張)", "買進純度佔比(%)", "買進均價/主力成本(元)", "淨買超金額(億元)", "主力吸籌強度評分"
         ]
-        print(df_top[display_cols].to_string(index=True))
+        valid_cols = [c for c in display_cols if c in df_top.columns]
+        print(df_top[valid_cols].to_string(index=True))
 
         out_path = args.output
         if not out_path:

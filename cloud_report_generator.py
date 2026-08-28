@@ -27,14 +27,15 @@ from find_similar_cases import get_stock_name_map, get_broker_name_map
 
 def run_heavy_accumulation_analysis(
     parquet_files: List[str],
-    min_net_amt_yi: float = 0.3,         # 淨買超金額門檻 (億元，預設 3000 萬元 = 0.3 億)
-    min_buy_ratio_pct: float = 70.0,     # 買進純度佔比門檻 (預設 70%)
-    min_net_vol_sheets: float = 50.0,    # 淨買超張數門檻 (預設 50 張)
-    min_trade_days: int = 1,             # 最小活躍天數
+    min_net_amt_yi: float = 0.3,             # 淨買超金額門檻 (億元，預設 3000 萬元 = 0.3 億)
+    min_buy_ratio_pct: float = 70.0,         # 買進純度佔比門檻 (預設 70%)
+    min_net_vol_sheets: float = 50.0,        # 淨買超張數門檻 (預設 50 張)
+    min_trade_days: int = 1,                 # 最小活躍天數
+    ignition_threshold_ratio: float = 0.20,  # ★重要核心參數★ 主力點火確認門檻比例 (預設 20% / 0.20，累計買超達總部位 20% 認定正式點火脫離試單)
     top_n: int = 20
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    透過 DuckDB 執行川湖+凱基三多重押模型分析
+    透過 DuckDB 執行川湖+凱基三多重押模型分析 (含主力點火起算日與吃貨歷時計算)
     回傳 (篩選結果 DataFrame, 統計數據概覽字典)
     """
     if not parquet_files:
@@ -49,7 +50,7 @@ def run_heavy_accumulation_analysis(
     broker_names = get_broker_name_map()
 
     sql = f"""
-    WITH filtered_trades AS (
+    WITH raw_trades AS (
         SELECT 
             symbol,
             broker_id,
@@ -64,12 +65,37 @@ def run_heavy_accumulation_analysis(
         FROM read_parquet({absr1_files})
         WHERE (buy_amt >= 100 OR sell_amt >= 100)
     ),
-    agg AS (
+    daily_trades AS (
+        SELECT
+            symbol,
+            broker_id,
+            SUBSTRING(trade_date, 1, 10) AS trade_date,
+            SUM(buy_vol) AS buy_vol,
+            SUM(sell_vol) AS sell_vol,
+            SUM(net_vol) AS net_vol,
+            SUM(buy_amt) AS buy_amt,
+            SUM(sell_amt) AS sell_amt,
+            SUM(net_amt) AS net_amt,
+            MAX(is_buy_day) AS is_buy_day
+        FROM raw_trades
+        GROUP BY symbol, broker_id, SUBSTRING(trade_date, 1, 10)
+    ),
+    daily_cum AS (
+        SELECT
+            *,
+            SUM(net_amt) OVER (
+                PARTITION BY symbol, broker_id 
+                ORDER BY trade_date 
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS cum_net_amt
+        FROM daily_trades
+    ),
+    summary_per_pair AS (
         SELECT 
             symbol,
             broker_id,
-            SUBSTRING(MIN(trade_date), 1, 10) AS first_date,
-            SUBSTRING(MAX(trade_date), 1, 10) AS last_date,
+            MIN(trade_date) AS first_date,
+            MAX(trade_date) AS last_date,
             COUNT(DISTINCT trade_date) AS trade_days,
             SUM(is_buy_day) AS buy_days,
             SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
@@ -78,40 +104,65 @@ def run_heavy_accumulation_analysis(
             SUM(buy_amt) / 10000.0 AS buy_amt_yi,
             SUM(sell_amt) / 10000.0 AS sell_amt_yi,
             SUM(net_amt) / 10000.0 AS net_amt_yi,
+            SUM(net_amt) AS total_net_amt_k,
             ROUND((SUM(buy_amt) * 1000.0) / NULLIF(SUM(buy_vol), 0), 2) AS buy_avg_price,
             ROUND((SUM(sell_amt) * 1000.0) / NULLIF(SUM(sell_vol), 0), 2) AS sell_avg_price,
             ROUND(SUM(buy_vol) * 100.0 / NULLIF(SUM(buy_vol) + SUM(sell_vol), 0), 1) AS buy_ratio_pct,
             ROUND(SUM(is_buy_day) * 100.0 / NULLIF(COUNT(DISTINCT trade_date), 0), 1) AS buy_day_pct
-        FROM filtered_trades
+        FROM daily_trades
         GROUP BY symbol, broker_id
+    ),
+    ignition_dates AS (
+        SELECT
+            d.symbol,
+            d.broker_id,
+            MIN(d.trade_date) AS ignition_date
+        FROM daily_cum d
+        JOIN summary_per_pair s ON d.symbol = s.symbol AND d.broker_id = s.broker_id
+        WHERE (
+            -- ★ 核心判定：累計淨買超首度達到該主力總部位的 20% (自適應高低價股與主力規模)
+            d.cum_net_amt >= (s.total_net_amt_k * {ignition_threshold_ratio})
+        )
+        GROUP BY d.symbol, d.broker_id
     )
     SELECT 
-        symbol,
-        broker_id,
-        first_date,
-        last_date,
-        trade_days,
-        buy_days,
-        buy_day_pct,
-        ROUND(buy_vol_sheets, 1) AS buy_vol_sheets,
-        ROUND(sell_vol_sheets, 1) AS sell_vol_sheets,
-        ROUND(net_vol_sheets, 1) AS net_vol_sheets,
-        buy_ratio_pct,
-        buy_avg_price,
-        sell_avg_price,
-        ROUND(buy_amt_yi, 2) AS buy_amt_yi,
-        ROUND(net_amt_yi, 2) AS net_amt_yi
-    FROM agg
-    WHERE net_amt_yi >= {min_net_amt_yi}
-      AND buy_ratio_pct >= {min_buy_ratio_pct}
-      AND net_vol_sheets >= {min_net_vol_sheets}
-      AND trade_days >= {min_trade_days}
-    ORDER BY net_amt_yi DESC
+        s.symbol,
+        s.broker_id,
+        s.first_date,
+        COALESCE(i.ignition_date, s.first_date) AS ignition_date,
+        s.last_date,
+        s.trade_days,
+        s.buy_days,
+        s.buy_day_pct,
+        ROUND(s.buy_vol_sheets, 1) AS buy_vol_sheets,
+        ROUND(s.sell_vol_sheets, 1) AS sell_vol_sheets,
+        ROUND(s.net_vol_sheets, 1) AS net_vol_sheets,
+        s.buy_ratio_pct,
+        s.buy_avg_price,
+        s.sell_avg_price,
+        ROUND(s.buy_amt_yi, 2) AS buy_amt_yi,
+        ROUND(s.net_amt_yi, 2) AS net_amt_yi
+    FROM summary_per_pair s
+    LEFT JOIN ignition_dates i ON s.symbol = i.symbol AND s.broker_id = i.broker_id
+    WHERE s.net_amt_yi >= {min_net_amt_yi}
+      AND s.buy_ratio_pct >= {min_buy_ratio_pct}
+      AND s.net_vol_sheets >= {min_net_vol_sheets}
+      AND s.trade_days >= {min_trade_days}
+    ORDER BY s.net_amt_yi DESC
     """
 
     df = duckdb.query(sql).to_df()
     if df.empty:
         return pd.DataFrame(), {"total_records": 0, "unique_stocks": 0}
+
+    # 計算主力吃貨歷時天數 (以日曆天計算，如 2026-07-08 至 2026-08-27 為 51 天)
+    df["first_date"] = df["first_date"].astype(str).str.slice(0, 10)
+    df["ignition_date"] = df["ignition_date"].astype(str).str.slice(0, 10)
+    df["last_date"] = df["last_date"].astype(str).str.slice(0, 10)
+    
+    ign_dt = pd.to_datetime(df["ignition_date"])
+    lst_dt = pd.to_datetime(df["last_date"])
+    df["accum_days"] = (lst_dt - ign_dt).dt.days + 1
 
     # 計算吸籌強度評分 (Score 0~100)
     amt_score = np.clip(np.log10(np.maximum(1.0, df["net_amt_yi"] * 10000.0)) * 8.0, 0, 40.0)
@@ -141,19 +192,8 @@ def run_heavy_accumulation_analysis(
     return df, summary
 
 
-def generate_html_email_report(
-    df: pd.DataFrame,
-    summary: Dict[str, Any],
-    report_title: str = "台股主力波段連續重押吸籌雷達日報"
-) -> str:
-    """生成現代 FinTech 響應式 HTML 郵件內容"""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    scan_period = f"{summary.get('start_date', '')} ~ {summary.get('end_date', '')}"
-    
-    top_df = df.head(15) if not df.empty else pd.DataFrame()
-
 def generate_single_table_html(top_df: pd.DataFrame) -> str:
-    """生成單一週期的表格 HTML"""
+    """生成單一週期的表格 HTML (含點火起算日、吃貨歷時與標籤)"""
     if top_df.empty:
         return '<tr><td colspan="7" style="text-align:center; padding: 18px; color: #888;">此週期無符合重押門檻之標的</td></tr>'
 
@@ -164,14 +204,20 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
         
         tags = []
         tag_style = 'display: inline-block; white-space: nowrap; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px; margin-top: 2px;'
+        
+        # 點火時間與吃貨型態標籤
+        accum_days = int(row.get("accum_days", 1))
+        if accum_days <= 7 or row["trade_days"] <= 3:
+            tags.append(f'<span style="background-color: #fff7e6; color: #d46b08; border: 1px solid #ffd591; {tag_style}">🚀 剛點火</span>')
+        elif row["buy_days"] >= 3 and row["buy_ratio_pct"] >= 75:
+            tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
+        
         if row["buy_ratio_pct"] >= 85:
             tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">🎯 絕對鎖碼</span>')
-        if row["buy_days"] >= 3:
-            tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
         if row["net_amt_yi"] >= 1.0:
             tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
         
-        tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:2px;">標準吸籌</span>'
+        tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:2px;">波段佈局</span>'
 
         table_rows_html += f"""
         <tr style="border-bottom: 1px solid #f0f0f0;">
@@ -182,9 +228,12 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
                 <div style="font-weight: bold; font-size: 14px; color: #111827; white-space: nowrap;">{row['股票標的']}</div>
                 <div style="margin-top: 2px; white-space: nowrap;">{tag_html}</div>
             </td>
-            <td style="padding: 10px; min-width: 150px; white-space: nowrap;">
+            <td style="padding: 10px; min-width: 160px; white-space: nowrap;">
                 <div style="font-weight: 600; color: #1e40af; font-size: 13px;">{row['主力分點']}</div>
-                <div style="font-size: 11px; color: #6b7280;">進出 {row['trade_days']} 天 / 買超 {row['buy_days']} 天</div>
+                <div style="font-size: 11px; color: #4b5563; margin-top: 2px;">
+                    點火: <strong style="color: #b91c1c;">{row['ignition_date']}</strong> ({row['accum_days']}天)
+                </div>
+                <div style="font-size: 10px; color: #9ca3af;">進出 {row['trade_days']} 天 / 買超 {row['buy_days']} 天</div>
             </td>
             <td style="padding: 10px; text-align: right; min-width: 120px; white-space: nowrap;">
                 <div style="font-weight: bold; font-size: 14px; color: #dc2626;">+{row['net_amt_yi']:,.2f} 億</div>
@@ -224,15 +273,20 @@ def generate_multi_period_html_report(
     ]
 
     for key, title, theme_color, desc in period_configs:
-        sub_df = reports_dict.get(key, pd.DataFrame()).head(10)
-        rows_html = generate_single_table_html(sub_df)
+        sub_df = reports_dict.get(key, pd.DataFrame())
+        data_period_str = ""
+        if not sub_df.empty and "first_date" in sub_df.columns and "last_date" in sub_df.columns:
+            data_period_str = f" · 觀察區間: {sub_df['first_date'].min()} ~ {sub_df['last_date'].max()}"
+        
+        top10_df = sub_df.head(10)
+        rows_html = generate_single_table_html(top10_df)
         
         sections_html += f"""
         <div style="margin-bottom: 28px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #ffffff;">
             <div style="background-color: #f8fafc; padding: 14px 18px; border-bottom: 2px solid {theme_color}; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
                 <div>
                     <div style="font-size: 15px; font-weight: 800; color: #0f172a;">{title}</div>
-                    <div style="font-size: 12px; color: #64748b; margin-top: 2px;">{desc}</div>
+                    <div style="font-size: 12px; color: #64748b; margin-top: 2px;">{desc}{data_period_str}</div>
                 </div>
             </div>
 
@@ -242,7 +296,7 @@ def generate_multi_period_html_report(
                         <tr style="background-color: #f1f5f9; color: #475569; font-weight: 700; border-bottom: 1px solid #cbd5e1;">
                             <th style="padding: 8px; text-align: center; width: 40px; white-space: nowrap;">排名</th>
                             <th style="padding: 8px 10px; min-width: 190px; white-space: nowrap;">股票標的 / 吸籌特徵</th>
-                            <th style="padding: 8px 10px; min-width: 150px; white-space: nowrap;">主力券商分點</th>
+                            <th style="padding: 8px 10px; min-width: 160px; white-space: nowrap;">主力分點 / 點火日</th>
                             <th style="padding: 8px 10px; text-align: right; min-width: 120px; white-space: nowrap;">淨買超金額</th>
                             <th style="padding: 8px 10px; text-align: right; min-width: 110px; white-space: nowrap;">淨買張數 / 純度</th>
                             <th style="padding: 8px 10px; text-align: right; min-width: 95px; white-space: nowrap;">主力買均價</th>
@@ -283,7 +337,7 @@ def generate_multi_period_html_report(
             
             <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px;">
                 <span>⏱ 產出時間：<strong>{now_str}</strong></span>
-                <span>📎 附件：隨信附上三週期完整 Excel 複盤明細 (內含 3 個工作表)</span>
+                <span>📎 附件：隨信附上三週期完整 Excel 複盤明細 (含主力點火起算日與吃貨歷時)</span>
             </div>
         </div>
 
@@ -296,6 +350,7 @@ def generate_multi_period_html_report(
         <div style="padding: 16px 24px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b; line-height: 1.6;">
             <div style="font-weight: bold; color: #334155; margin-bottom: 6px;">💡 操盤白話文快速看懂：</div>
             <ul style="margin: 0; padding-left: 18px;">
+                <li><strong>主力點火日 / 吃貨歷時</strong>：系統智慧演算法偵測主力「首次大額建倉/買超爆發」的真實起算日，並計算建倉歷時天數，幫助判斷是剛進場的新主力或長線大戶。</li>
                 <li><strong>買進純度（%）</strong>：主力進出的 100 張裡面，買進佔了幾張。純度超過 <strong>75%（7成5）</strong> 代表主力「只買不賣、真心吃貨」，不是當沖客！</li>
                 <li><strong>主力買均價</strong>：這段期間大戶買進的「平均每股成本」。只要股價回到這個價位附近，主力通常會強力護盤防守。</li>
                 <li><strong>完整明細</strong>：全市場所有符合條件的個股已整理在隨信附上的 <strong>Excel 檔案</strong>（內含 5日、20日、60日 三個工作表），可直接下載打開複盤！</li>
@@ -325,7 +380,9 @@ def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_exc
     export_cols = {
         "股票標的": "股票標的",
         "主力分點": "主力券商分點",
-        "first_date": "起算日期",
+        "ignition_date": "主力點火起算日",
+        "accum_days": "吃貨歷時(天)",
+        "first_date": "資料區間起日",
         "last_date": "最新活躍日",
         "trade_days": "進出天數",
         "buy_days": "買超天數",
@@ -363,7 +420,9 @@ def generate_excel_report(df: pd.DataFrame, output_excel_path: str):
     export_cols = {
         "股票標的": "股票標的",
         "主力分點": "主力券商分點",
-        "first_date": "起算日期",
+        "ignition_date": "主力點火起算日",
+        "accum_days": "吃貨歷時(天)",
+        "first_date": "資料區間起日",
         "last_date": "最新活躍日",
         "trade_days": "進出天數",
         "buy_days": "買超天數",
@@ -400,7 +459,7 @@ if __name__ == "__main__":
     print(f"[*] 找到 {len(files)} 個 Parquet 檔案，開始執行重押分析...")
     res_df, summary_info = run_heavy_accumulation_analysis(files)
 
-    html_content = generate_html_email_report(res_df, summary_info)
+    html_content = generate_multi_period_html_report({"5d": res_df})
     preview_path = os.path.join(args.data_dir, "preview_report.html")
     with open(preview_path, "w", encoding="utf-8") as f:
         f.write(html_content)
@@ -408,3 +467,4 @@ if __name__ == "__main__":
 
     excel_path = os.path.join(args.data_dir, "heavy_accumulation_report.xlsx")
     generate_excel_report(res_df, excel_path)
+
