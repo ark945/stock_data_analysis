@@ -117,12 +117,13 @@ def main():
     print(f"    - 近 20 日月波段認養標的: {len(df_20d):,} 組 (川湖模型)")
     print(f"    - 近 60 日季線大戶鎖碼標的: {len(df_60d):,} 組")
 
-    # 4. 生成三週期 HTML 郵件內容
+    # 4. 生成三週期 HTML 郵件內容 (TOP 15 精選)
     report_title = f"台股主力三週期連續重押吸籌雷達日報"
     html_content = generate_multi_period_html_report(
         reports_dict=reports_dict,
         latest_date=latest_date,
-        report_title=report_title
+        report_title=report_title,
+        top_display_n=15
     )
 
     # 5. 生成包含 3 個 Sheet 的 Excel 附件

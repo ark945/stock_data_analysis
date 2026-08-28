@@ -142,8 +142,9 @@ def scan_heavy_accumulation(
     min_net_vol_sheets: float = 100.0,     # 最小淨買超張數 (預設 100 張)
     min_trade_days: int = 10,              # 最少交易天數 (排除少數天數大宗短線)
     top_n: int = 30,
-    sort_by: str = "amt",                  # 排序方式: "amt" (金額優先，預設) 或 "score" (純度評分優先)
+    sort_by: str = "score",                # 排序方式: "score" (吸籌強度評分優先，推薦) 或 "amt" (金額優先)
     ignition_threshold_ratio: float = 0.20,# 主力點火確認門檻比例 (預設 20% / 0.20)
+    exclude_etf: bool = True,              # 是否排除 ETF (預設 True，排除 00 開頭被動標的)
     symbol_filter: Optional[str] = None,
     broker_filter: Optional[str] = None
 ) -> pd.DataFrame:
@@ -161,7 +162,7 @@ def scan_heavy_accumulation(
     print(f"[*] 主力波段吸籌雷達啟動 (川湖-凱基三多模式掃描)")
     print(f"[*] 掃描檔案數: {len(files)} 個交易日 (全市場分點資料)")
     print(f"[*] 門檻條件: 淨買超 >= {min_net_amt_yi:.2f} 億元, 買進佔比 >= {min_buy_ratio_pct:.0f}%, 淨買超 >= {min_net_vol_sheets} 張, 交易天數 >= {min_trade_days} 天, 點火門檻 = {ignition_threshold_ratio*100:.0f}%")
-    print(f"[*] 排序基準: {'【淨買超總金額優先】' if sort_by == 'amt' else '【吸籌純度評分優先】'}")
+    print(f"[*] 排序基準: {'【吸籌純度評分優先】' if sort_by == 'score' else '【淨買超總金額優先】'} (已過濾 ETF: {exclude_etf})")
     print(f"==================================================")
     sys.stdout.flush()
 
@@ -175,6 +176,8 @@ def scan_heavy_accumulation(
         extra_filter += f" AND symbol = '{symbol_filter.strip()}'"
     if broker_filter:
         extra_filter += f" AND broker_id = '{broker_filter.strip()}'"
+    if exclude_etf:
+        extra_filter += " AND NOT (symbol LIKE '00%')"
 
     sql = f"""
     WITH raw_trades AS (
@@ -371,10 +374,11 @@ def main():
     parser.add_argument("--min-ratio", type=float, default=75.0, help="最小買進佔比 (百分比，預設 75 即 75%)")
     parser.add_argument("--min-sheets", type=float, default=100.0, help="最小淨買超張數 (預設 100 張)")
     parser.add_argument("--min-days", type=int, default=10, help="最少進出交易天數 (預設 10 天，排除少數天數大宗短線)")
-    parser.add_argument("--sort", type=str, default="amt", choices=["amt", "score"], help="排序方式: amt (淨買金額優先，預設) 或 score (純度評分優先)")
+    parser.add_argument("--sort", type=str, default="score", choices=["score", "amt"], help="排序方式: score (吸籌純度評分優先，預設推薦) 或 amt (淨買金額優先)")
     parser.add_argument("--symbol", type=str, default=None, help="指定查詢特定股票 (例: 2059)")
     parser.add_argument("--broker", type=str, default=None, help="指定查詢特定券商分點 (例: 9275)")
     parser.add_argument("--ignition-ratio", type=float, default=0.20, help="主力點火確認門檻比例 (預設 0.20 即 20%)")
+    parser.add_argument("--include-etf", action="store_true", help="包含 ETF 標的 (預設已排除 00 開頭 ETF)")
     parser.add_argument("--top", type=int, default=30, help="輸出前幾大名單 (預設 30)")
     parser.add_argument("--output", type=str, default=None, help="輸出報告路徑 (.xlsx 或 .csv)")
 
@@ -405,6 +409,7 @@ def main():
         top_n=args.top,
         sort_by=args.sort,
         ignition_threshold_ratio=args.ignition_ratio,
+        exclude_etf=not args.include_etf,
         symbol_filter=args.symbol,
         broker_filter=args.broker
     )

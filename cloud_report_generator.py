@@ -31,11 +31,13 @@ def run_heavy_accumulation_analysis(
     min_buy_ratio_pct: float = 70.0,         # 買進純度佔比門檻 (預設 70%)
     min_net_vol_sheets: float = 50.0,        # 淨買超張數門檻 (預設 50 張)
     min_trade_days: int = 1,                 # 最小活躍天數
-    ignition_threshold_ratio: float = 0.20,  # ★重要核心參數★ 主力點火確認門檻比例 (預設 20% / 0.20，累計買超達總部位 20% 認定正式點火脫離試單)
-    top_n: int = 20
+    ignition_threshold_ratio: float = 0.20,  # 主力點火確認門檻比例 (預設 20%)
+    exclude_etf: bool = True,                # 是否過濾 ETF 標的 (預設 True，排除 00 開頭被動標的)
+    sort_by: str = "score",                  # 排序方式: "score" (吸籌強度評分優先，推薦) 或 "amt" (金額優先)
+    top_n: int = 30
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    透過 DuckDB 執行川湖+凱基三多重押模型分析 (含主力點火起算日與吃貨歷時計算)
+    透過 DuckDB 執行川湖+凱基三多重押模型分析 (含主力點火起算日、吃貨歷時與吸籌強度評分排序)
     回傳 (篩選結果 DataFrame, 統計數據概覽字典)
     """
     if not parquet_files:
@@ -48,6 +50,10 @@ def run_heavy_accumulation_analysis(
 
     stock_names = get_stock_name_map()
     broker_names = get_broker_name_map()
+
+    extra_sql_filter = ""
+    if exclude_etf:
+        extra_sql_filter += " AND NOT (symbol LIKE '00%')"
 
     sql = f"""
     WITH raw_trades AS (
@@ -63,7 +69,7 @@ def run_heavy_accumulation_analysis(
             net_amt,
             CASE WHEN net_vol > 0 THEN 1 ELSE 0 END AS is_buy_day
         FROM read_parquet({absr1_files})
-        WHERE (buy_amt >= 100 OR sell_amt >= 100)
+        WHERE (buy_amt >= 100 OR sell_amt >= 100){extra_sql_filter}
     ),
     daily_trades AS (
         SELECT
@@ -148,7 +154,6 @@ def run_heavy_accumulation_analysis(
       AND s.buy_ratio_pct >= {min_buy_ratio_pct}
       AND s.net_vol_sheets >= {min_net_vol_sheets}
       AND s.trade_days >= {min_trade_days}
-    ORDER BY s.net_amt_yi DESC
     """
 
     df = duckdb.query(sql).to_df()
@@ -164,11 +169,17 @@ def run_heavy_accumulation_analysis(
     lst_dt = pd.to_datetime(df["last_date"])
     df["accum_days"] = (lst_dt - ign_dt).dt.days + 1
 
-    # 計算吸籌強度評分 (Score 0~100)
-    amt_score = np.clip(np.log10(np.maximum(1.0, df["net_amt_yi"] * 10000.0)) * 8.0, 0, 40.0)
-    ratio_score = np.clip((df["buy_ratio_pct"] / 100.0 - 0.5) * 60.0, 0, 30.0)
-    day_score = np.clip(df["buy_day_pct"] * 0.3, 0, 30.0)
+    # 計算主力吸籌強度評分 (Score 0~100 分，融合資金規模、買進純度與持續吃貨天數)
+    amt_score = np.clip(np.log10(np.maximum(1.0, df["net_amt_yi"] * 10000.0)) * 8.0, 0, 35.0)
+    ratio_score = np.clip((df["buy_ratio_pct"] - 50.0) * 0.8, 0, 40.0)
+    day_score = np.clip(df["buy_day_pct"] * 0.25, 0, 25.0)
     df["score"] = (amt_score + ratio_score + day_score).round(1)
+
+    # 依排序基準排列
+    if sort_by == "score":
+        df.sort_values(by=["score", "net_amt_yi"], ascending=[False, False], inplace=True)
+    else:
+        df.sort_values(by=["net_amt_yi", "score"], ascending=[False, False], inplace=True)
 
     df["stock_name"] = df["symbol"].apply(lambda s: stock_names.get(s, ""))
     df["broker_name"] = df["broker_id"].apply(lambda b: broker_names.get(b, ""))
@@ -207,13 +218,15 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
         
         # 點火時間與吃貨型態標籤
         accum_days = int(row.get("accum_days", 1))
-        if accum_days <= 7 or row["trade_days"] <= 3:
+        if row["buy_ratio_pct"] >= 85 and row["buy_days"] >= 4:
+            tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">⭐ 川湖重押型</span>')
+        elif accum_days <= 7 or row["trade_days"] <= 3:
             tags.append(f'<span style="background-color: #fff7e6; color: #d46b08; border: 1px solid #ffd591; {tag_style}">🚀 剛點火</span>')
         elif row["buy_days"] >= 3 and row["buy_ratio_pct"] >= 75:
             tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
         
-        if row["buy_ratio_pct"] >= 85:
-            tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">🎯 絕對鎖碼</span>')
+        if row["buy_ratio_pct"] >= 88:
+            tags.append(f'<span style="background-color: #fff0f6; color: #c41d7f; border: 1px solid #ffadd2; {tag_style}">🎯 絕對鎖碼</span>')
         if row["net_amt_yi"] >= 1.0:
             tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
         
@@ -260,16 +273,17 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
 def generate_multi_period_html_report(
     reports_dict: Dict[str, pd.DataFrame],
     latest_date: str = "",
-    report_title: str = "台股主力三週期連續重押吸籌雷達日報"
+    report_title: str = "台股主力三週期連續重押吸籌雷達日報",
+    top_display_n: int = 15
 ) -> str:
-    """生成包含 5日 (短線)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容"""
+    """生成包含 5日 (短線)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (TOP 15 精選)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     sections_html = ""
     period_configs = [
-        ("5d", "🚀 【短線點火雷達】近 5 日主力快速建倉 (週線 TOP 10)", "#2563eb", "適合尋找剛進場點火、連買 3 天以上之初升段飆股"),
-        ("20d", "⭐ 【黃金波段認養】近 20 日主力深度重押 (月線 TOP 10 ⭐川湖核心模型)", "#d97706", "籌碼沉澱最完整、主力成本均價最精準之主力飆股"),
-        ("60d", "💎 【季線超級大戶】近 60 日大波段鎖碼 (季線 TOP 10)", "#7c3aed", "億元級超級大戶數月默默吃貨、籌碼徹底鎖定之長波飆股")
+        ("5d", f"🚀 【短線點火雷達】近 5 日主力快速建倉 (週線 TOP {top_display_n})", "#2563eb", "適合尋找剛進場點火、連買 3 天以上之初升段飆股"),
+        ("20d", f"⭐ 【黃金波段認養】近 20 日主力深度重押 (月線 TOP {top_display_n} ⭐川湖核心模型)", "#d97706", "籌碼沉澱最完整、主力成本均價最精準之主力飆股"),
+        ("60d", f"💎 【季線超級大戶】近 60 日大波段鎖碼 (季線 TOP {top_display_n})", "#7c3aed", "億元級超級大戶數月默默吃貨、籌碼徹底鎖定之長波飆股")
     ]
 
     for key, title, theme_color, desc in period_configs:
@@ -278,8 +292,8 @@ def generate_multi_period_html_report(
         if not sub_df.empty and "first_date" in sub_df.columns and "last_date" in sub_df.columns:
             data_period_str = f" · 觀察區間: {sub_df['first_date'].min()} ~ {sub_df['last_date'].max()}"
         
-        top10_df = sub_df.head(10)
-        rows_html = generate_single_table_html(top10_df)
+        top_list_df = sub_df.head(top_display_n)
+        rows_html = generate_single_table_html(top_list_df)
         
         sections_html += f"""
         <div style="margin-bottom: 28px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #ffffff;">
