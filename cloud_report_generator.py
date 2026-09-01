@@ -273,15 +273,16 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
 def generate_multi_period_html_report(
     reports_dict: Dict[str, pd.DataFrame],
     latest_date: str = "",
-    report_title: str = "台股主力三週期連續重押吸籌雷達日報",
+    report_title: str = "台股主力四週期連續重押吸籌雷達日報",
     top_display_n: int = 15
 ) -> str:
-    """生成包含 5日 (短線)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (TOP 15 精選)"""
+    """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (TOP 15 精選)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     sections_html = ""
     period_configs = [
         ("5d", f"🚀 【短線點火雷達】近 5 日主力快速建倉 (週線 TOP {top_display_n})", "#2563eb", "適合尋找剛進場點火、連買 3 天以上之初升段飆股"),
+        ("10d", f"🔥 【雙週波段追蹤】近 10 日主力持續加碼 (雙週線 TOP {top_display_n})", "#059669", "介於短線點火與月波段之間，抓取連續兩週不間斷吃貨之標的"),
         ("20d", f"⭐ 【黃金波段認養】近 20 日主力深度重押 (月線 TOP {top_display_n} ⭐川湖核心模型)", "#d97706", "籌碼沉澱最完整、主力成本均價最精準之主力飆股"),
         ("60d", f"💎 【季線超級大戶】近 60 日大波段鎖碼 (季線 TOP {top_display_n})", "#7c3aed", "億元級超級大戶數月默默吃貨、籌碼徹底鎖定之長波飆股")
     ]
@@ -345,17 +346,17 @@ def generate_multi_period_html_report(
                     🚀 {report_title} ({latest_date})
                 </h1>
                 <p style="margin: 0; font-size: 13px; color: #94a3b8;">
-                    三維度同步掃描：近 5 日短線點火 ＋ 近 20 日月波段認養 (川湖模型) ＋ 近 60 日季線大戶鎖碼
+                    四維度同步掃描：近 5 日短線點火 ＋ 近 10 日雙週波段 ＋ 近 20 日月波段認養 (川湖模型) ＋ 近 60 日季線大戶鎖碼
                 </p>
             </div>
             
             <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px;">
                 <span>⏱ 產出時間：<strong>{now_str}</strong></span>
-                <span>📎 附件：隨信附上三週期完整 Excel 複盤明細 (含主力點火起算日與吃貨歷時)</span>
+                <span>📎 附件：隨信附上四週期完整 Excel 複盤明細 (含主力點火起算日與吃貨歷時)</span>
             </div>
         </div>
 
-        <!-- 主體內容 (3 個週期排行榜) -->
+        <!-- 主體內容 (4 個週期排行榜) -->
         <div style="padding: 24px 20px 10px 20px;">
             {sections_html}
         </div>
@@ -367,7 +368,7 @@ def generate_multi_period_html_report(
                 <li><strong>主力點火日 / 吃貨歷時</strong>：系統智慧演算法偵測主力「首次大額建倉/買超爆發」的真實起算日，並計算建倉歷時天數，幫助判斷是剛進場的新主力或長線大戶。</li>
                 <li><strong>買進純度（%）</strong>：主力進出的 100 張裡面，買進佔了幾張。純度超過 <strong>75%（7成5）</strong> 代表主力「只買不賣、真心吃貨」，不是當沖客！</li>
                 <li><strong>主力買均價</strong>：這段期間大戶買進的「平均每股成本」。只要股價回到這個價位附近，主力通常會強力護盤防守。</li>
-                <li><strong>完整明細</strong>：全市場所有符合條件的個股已整理在隨信附上的 <strong>Excel 檔案</strong>（內含 5日、20日、60日 三個工作表），可直接下載打開複盤！</li>
+                <li><strong>完整明細</strong>：全市場所有符合條件的個股已整理在隨信附上的 <strong>Excel 檔案</strong>（內含 5日、10日、20日、60日 四個工作表），可直接下載打開複盤！</li>
             </ul>
         </div>
 
@@ -387,6 +388,7 @@ def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_exc
     """匯出包含 5日、20日、60日 三個工作表的 Excel (.xlsx)"""
     sheet_name_map = {
         "5d": "近5日短線點火",
+        "10d": "近10日雙週波段",
         "20d": "近20日月波段重押",
         "60d": "近60日季線大戶"
     }
@@ -422,7 +424,7 @@ def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_exc
                 out_df.rename(columns=export_cols, inplace=True)
                 out_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-    print(f"[✓] 三週期多工作表 Excel 報表已匯出至: {output_excel_path}")
+    print(f"[✓] 四週期多工作表 Excel 報表已匯出至: {output_excel_path}")
 
 
 def generate_excel_report(df: pd.DataFrame, output_excel_path: str):

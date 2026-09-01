@@ -4,11 +4,12 @@
 ===================================================
 執行流程：
 1. 智慧增量從 Google Drive 下載近 60 日全市場分點 Parquet 檔案
-2. 啟動 DuckDB 同步穿透計算三大核心週期：
+2. 啟動 DuckDB 同步穿透計算四大核心週期：
    - 🚀 【近 5 日短線點火】(週線主力快速建倉)
+   - 🔥 【近 10 日雙週波段追擊】(雙週線主力持續加碼)
    - ⭐ 【近 20 日月波段認養】(月線主力深度重押，川湖核心模型)
    - 💎 【近 60 日季線大戶】(季線長波段鎖碼大戶)
-3. 生成現代 FinTech 響應式多週期 HTML 郵件與 3 工作表之 Excel 報表
+3. 生成現代 FinTech 響應式多週期 HTML 郵件與 4 工作表之 Excel 報表
 4. 透過 SMTP 與 Telegram 將日報與 Excel 附件自動發送
 """
 
@@ -28,7 +29,7 @@ from send_email_report import send_email_report, send_telegram_notify
 
 
 def main():
-    parser = argparse.ArgumentParser(description="台股主力重押日報雲端三週期自動化排程")
+    parser = argparse.ArgumentParser(description="台股主力重押日報雲端四週期自動化排程")
     parser.add_argument("--lookback-days", type=int, default=60, help="回溯最大交易天數 (預設: 60 日)")
     parser.add_argument("--local-dir", default="", help="指定本機資料目錄 (若指定則略過 GDrive 下載)")
     parser.add_argument("--output-dir", default="./daily_reports", help="報表產出目錄")
@@ -39,9 +40,9 @@ def main():
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     print("=" * 60)
-    print(f"🚀 台股主力三週期連續重押吸籌雷達日報 — 雲端自動化引擎啟動")
+    print(f"🚀 台股主力四週期連續重押吸籌雷達日報 — 雲端自動化引擎啟動")
     print(f"[*] 執行時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"[*] 同步運算三週期: 【近 5 日短線】+ 【近 20 日月波段(川湖模型)】+ 【近 60 日季線大戶】")
+    print(f"[*] 同步運算四週期: 【近 5 日短線】+ 【近 10 日雙週波段】+ 【近 20 日月波段(川湖模型)】+ 【近 60 日季線大戶】")
     print("=" * 60)
 
     # 1. 取得 Parquet 資料檔案
@@ -71,12 +72,13 @@ def main():
     total_files = len(absr1_files)
     print(f"[✓] 共有 {total_files} 個交易日分點 Parquet 檔案就緒！")
 
-    # 2. 切分 3 個週期檔案清單
+    # 2. 切分 4 個週期檔案清單
     files_5d = absr1_files[-5:] if total_files >= 5 else absr1_files
+    files_10d = absr1_files[-10:] if total_files >= 10 else absr1_files
     files_20d = absr1_files[-20:] if total_files >= 20 else absr1_files
     files_60d = absr1_files[-60:] if total_files >= 60 else absr1_files
 
-    # 3. 執行三週期 DuckDB 重押模型運算
+    # 3. 執行四週期 DuckDB 重押模型運算
     print("[*] 正在計算 【近 5 日】 短線點火雷達...")
     df_5d, sum_5d = run_heavy_accumulation_analysis(
         parquet_files=files_5d,
@@ -84,6 +86,15 @@ def main():
         min_buy_ratio_pct=70.0,
         min_net_vol_sheets=30.0,
         min_trade_days=1
+    )
+
+    print("[*] 正在計算 【近 10 日】 雙週波段追擊...")
+    df_10d, sum_10d = run_heavy_accumulation_analysis(
+        parquet_files=files_10d,
+        min_net_amt_yi=0.35,         # 10 日門檻: 淨買超 >= 3,500 萬元
+        min_buy_ratio_pct=72.0,
+        min_net_vol_sheets=50.0,
+        min_trade_days=2
     )
 
     print("[*] 正在計算 【近 20 日】 黃金月波段認養 (⭐川湖模型)...")
@@ -106,19 +117,21 @@ def main():
 
     reports_dict = {
         "5d": df_5d,
+        "10d": df_10d,
         "20d": df_20d,
         "60d": df_60d
     }
 
     latest_date = sum_5d.get("end_date") or sum_20d.get("end_date") or today_str
 
-    print(f"[✓] 三週期模型分析全數完成！")
+    print(f"[✓] 四週期模型分析全數完成！")
     print(f"    - 近 5 日短線點火標的: {len(df_5d):,} 組")
+    print(f"    - 近 10 日雙週波段追擊標的: {len(df_10d):,} 組")
     print(f"    - 近 20 日月波段認養標的: {len(df_20d):,} 組 (川湖模型)")
     print(f"    - 近 60 日季線大戶鎖碼標的: {len(df_60d):,} 組")
 
-    # 4. 生成三週期 HTML 郵件內容 (TOP 15 精選)
-    report_title = f"台股主力三週期連續重押吸籌雷達日報"
+    # 4. 生成四週期 HTML 郵件內容 (TOP 15 精選)
+    report_title = f"台股主力四週期連續重押吸籌雷達日報"
     html_content = generate_multi_period_html_report(
         reports_dict=reports_dict,
         latest_date=latest_date,
@@ -126,8 +139,8 @@ def main():
         top_display_n=15
     )
 
-    # 5. 生成包含 3 個 Sheet 的 Excel 附件
-    excel_filename = f"主力三週期重押雷達_{latest_date}.xlsx"
+    # 5. 生成包含 4 個 Sheet 的 Excel 附件
+    excel_filename = f"主力四週期重押雷達_{latest_date}.xlsx"
     excel_path = os.path.join(args.output_dir, excel_filename)
     generate_multi_sheet_excel(reports_dict, excel_path)
 
@@ -141,7 +154,7 @@ def main():
     if args.no_email:
         print("[*] 依參數設定 (--no-email)，跳過郵件寄送。")
     else:
-        email_subject = f"🚀 {report_title} ({latest_date}) | 5日短線 ＋ 20日月波段 ＋ 60日季大戶"
+        email_subject = f"🚀 {report_title} ({latest_date}) | 5日短線 ＋ 10日雙週波段 ＋ 20日月波段 ＋ 60日季大戶"
         success = send_email_report(
             subject=email_subject,
             html_content=html_content,
@@ -157,16 +170,17 @@ def main():
             f"🚀 *{report_title} ({latest_date})*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🔥 *近 5 日短線點火*：`{len(df_5d)} 檔`\n"
+            f"🔥 *近 10 日雙週波段追擊*：`{len(df_10d)} 檔`\n"
             f"⭐ *近 20 日月波段重押 (川湖)*：`{len(df_20d)} 檔`\n"
             f"   └ 最大吸籌：`{top_20d_stock}` ({top_20d_broker} +{top_20d_amt:.2f}億)\n"
             f"💎 *近 60 日季線大戶鎖碼*：`{len(df_60d)} 檔`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"📧 完整三週期 HTML 郵件與 3-Sheet Excel 已寄達信箱！"
+            f"📧 完整四週期 HTML 郵件與 4-Sheet Excel 已寄達信箱！"
         )
         send_telegram_notify(tg_msg)
 
         if success:
-            print("[✓] 三週期全自動化日報流程順利完成！")
+            print("[✓] 四週期全自動化日報流程順利完成！")
         else:
             print("[!] 郵件發送未完成，請檢查 SMTP 設定。")
 
