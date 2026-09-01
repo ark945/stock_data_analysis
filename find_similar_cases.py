@@ -231,9 +231,9 @@ def scan_heavy_accumulation(
             SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
             SUM(sell_vol) / 1000.0 AS sell_vol_sheets,
             SUM(net_vol) / 1000.0 AS net_vol_sheets,
-            SUM(buy_amt) / 10000.0 AS buy_amt_yi,
-            SUM(sell_amt) / 10000.0 AS sell_amt_yi,
-            SUM(net_amt) / 10000.0 AS net_amt_yi,
+            SUM(buy_amt) / 100000.0 AS buy_amt_yi,
+            SUM(sell_amt) / 100000.0 AS sell_amt_yi,
+            SUM(net_amt) / 100000.0 AS net_amt_yi,
             SUM(net_amt) AS total_net_amt_k,
             ROUND((SUM(buy_amt) * 1000.0) / NULLIF(SUM(buy_vol), 0), 2) AS buy_avg_price,
             ROUND((SUM(sell_amt) * 1000.0) / NULLIF(SUM(sell_vol), 0), 2) AS sell_avg_price,
@@ -296,7 +296,7 @@ def scan_heavy_accumulation(
     res_df["accum_days"] = (lst_dt - ign_dt).dt.days + 1
 
     # 計算吸籌強度評分 Score (0 ~ 100 分)
-    amt_score = np.clip(np.log10(np.maximum(1.0, res_df["net_amt_yi"] * 10000.0)) * 8.0, 0, 40.0)
+    amt_score = np.clip(np.log10(np.maximum(1.0, res_df["net_amt_yi"] * 100000.0)) * 8.0, 0, 40.0)
     ratio_score = np.clip((res_df["buy_ratio_pct"] / 100.0 - 0.5) * 60.0, 0, 30.0)
     day_score = np.clip(res_df["buy_day_pct"] * 0.3, 0, 30.0)
     res_df["score"] = (amt_score + ratio_score + day_score).round(1)

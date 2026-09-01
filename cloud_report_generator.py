@@ -107,9 +107,9 @@ def run_heavy_accumulation_analysis(
             SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
             SUM(sell_vol) / 1000.0 AS sell_vol_sheets,
             SUM(net_vol) / 1000.0 AS net_vol_sheets,
-            SUM(buy_amt) / 10000.0 AS buy_amt_yi,
-            SUM(sell_amt) / 10000.0 AS sell_amt_yi,
-            SUM(net_amt) / 10000.0 AS net_amt_yi,
+            SUM(buy_amt) / 100000.0 AS buy_amt_yi,
+            SUM(sell_amt) / 100000.0 AS sell_amt_yi,
+            SUM(net_amt) / 100000.0 AS net_amt_yi,
             SUM(net_amt) AS total_net_amt_k,
             ROUND((SUM(buy_amt) * 1000.0) / NULLIF(SUM(buy_vol), 0), 2) AS buy_avg_price,
             ROUND((SUM(sell_amt) * 1000.0) / NULLIF(SUM(sell_vol), 0), 2) AS sell_avg_price,
@@ -170,7 +170,7 @@ def run_heavy_accumulation_analysis(
     df["accum_days"] = (lst_dt - ign_dt).dt.days + 1
 
     # 計算主力吸籌強度評分 (Score 0~100 分，融合資金規模、買進純度與持續吃貨天數)
-    amt_score = np.clip(np.log10(np.maximum(1.0, df["net_amt_yi"] * 10000.0)) * 8.0, 0, 35.0)
+    amt_score = np.clip(np.log10(np.maximum(1.0, df["net_amt_yi"] * 100000.0)) * 8.0, 0, 35.0)
     ratio_score = np.clip((df["buy_ratio_pct"] - 50.0) * 0.8, 0, 40.0)
     day_score = np.clip(df["buy_day_pct"] * 0.25, 0, 25.0)
     df["score"] = (amt_score + ratio_score + day_score).round(1)
