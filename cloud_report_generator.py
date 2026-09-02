@@ -53,7 +53,7 @@ def run_heavy_accumulation_analysis(
     stock_names = get_stock_name_map()
     broker_names = get_broker_name_map()
 
-    extra_sql_filter = ""
+    extra_sql_filter = " AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')"  # 排除資料來源已知的佔位/雜訊代碼
     if exclude_etf:
         extra_sql_filter += " AND NOT (symbol LIKE '00%')"
 

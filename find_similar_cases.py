@@ -171,7 +171,7 @@ def scan_heavy_accumulation(
 
     start_t = time.time()
 
-    extra_filter = ""
+    extra_filter = " AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')"  # 排除資料來源已知的佔位/雜訊代碼
     if symbol_filter:
         extra_filter += f" AND symbol = '{symbol_filter.strip()}'"
     if broker_filter:

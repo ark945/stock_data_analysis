@@ -82,7 +82,7 @@ def detect_wash_trading(
             SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
             SUM(sell_vol) / 1000.0 AS sell_vol_sheets
         FROM read_parquet({_norm(files)})
-        WHERE NOT (symbol LIKE '00%')
+        WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
         GROUP BY symbol, broker_id, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10)
         HAVING SUM(buy_vol) / 1000.0 >= {min_vol_sheets} AND SUM(sell_vol) / 1000.0 >= {min_vol_sheets}
     """
@@ -129,7 +129,7 @@ def detect_broker_sync_group(
             SELECT symbol, broker_id, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date,
                 SUM(net_vol) / 1000.0 AS net_vol_sheets
             FROM read_parquet({_norm(files)})
-            WHERE NOT (symbol LIKE '00%')
+            WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
             GROUP BY symbol, broker_id, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10)
         ),
         buy_side AS (
@@ -192,7 +192,7 @@ def build_broker_profile(
             SUM(buy_vol) AS buy_vol,
             SUM(buy_amt) AS buy_amt
         FROM read_parquet({_norm(files)})
-        WHERE NOT (symbol LIKE '00%')
+        WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
         GROUP BY symbol, broker_id
         HAVING SUM(buy_amt) / 100000.0 >= {min_buy_amt_yi}
     """
@@ -255,7 +255,7 @@ def detect_cross_stock_sync_buying(
             WITH agg AS (
                 SELECT symbol, broker_id, SUM(buy_amt) / 100000.0 AS buy_amt_yi
                 FROM read_parquet({_norm(baseline_files)})
-                WHERE NOT (symbol LIKE '00%')
+                WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
                 GROUP BY symbol, broker_id
                 HAVING SUM(buy_amt) / 100000.0 >= 0.05
             )
