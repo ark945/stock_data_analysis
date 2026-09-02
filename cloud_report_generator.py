@@ -337,7 +337,8 @@ def generate_multi_period_html_report(
     reports_dict: Dict[str, pd.DataFrame],
     latest_date: str = "",
     report_title: str = "台股主力四週期連續重押吸籌雷達日報",
-    top_display_n: int = 15
+    top_display_n: int = 15,
+    extra_sections_html: str = ""
 ) -> str:
     """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (TOP 15 精選)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -432,6 +433,8 @@ def generate_multi_period_html_report(
         <div style="padding: 24px 20px 10px 20px;">
             {sections_html}
         </div>
+
+        {extra_sections_html}
 
         <!-- 說明與附件提示 (操盤白話文指南) -->
         <div style="padding: 16px 24px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b; line-height: 1.6;">

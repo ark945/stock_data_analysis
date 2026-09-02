@@ -25,6 +25,15 @@ from cloud_report_generator import (
     generate_multi_period_html_report,
     generate_multi_sheet_excel
 )
+from chip_intelligence_analysis import (
+    detect_reversal_warning,
+    detect_wash_trading,
+    detect_broker_sync_group,
+    build_broker_profile,
+    detect_cross_stock_sync_buying,
+    generate_intelligence_html_section,
+    append_intelligence_sheets_to_excel
+)
 from send_email_report import send_email_report, send_telegram_notify
 
 
@@ -155,19 +164,34 @@ def main():
     print(f"    - 近 20 日月波段認養標的: {len(df_20d):,} 組 (川湖模型)")
     print(f"    - 近 60 日季線大戶鎖碼標的: {len(df_60d):,} 組")
 
+    # 3.5 執行進階籌碼情報分析 (出貨預警/雙分點同步/分點側寫/跨股布局)
+    files_recent3 = absr1_files[-3:] if total_files >= 3 else absr1_files
+    print("[*] 正在執行進階籌碼情報分析...")
+    reversal_df = detect_reversal_warning(df_60d, files_recent3)
+    wash_df = detect_wash_trading(files_5d)
+    sync_df = detect_broker_sync_group(files_60d, min_co_days=5, min_net_vol_sheets=50.0, min_sync_ratio_pct=50.0)
+    profile_df = build_broker_profile(files_60d, top_n_brokers=50)
+    cross_df = detect_cross_stock_sync_buying(df_5d, min_stock_count=3, baseline_files=files_60d)
+    print(f"    - 主力翻臉出貨預警: {len(reversal_df):,} 組")
+    print(f"    - 集團同步進出: {len(sync_df):,} 組")
+    print(f"    - 跨股同步布局: {len(cross_df):,} 組")
+
     # 4. 生成四週期 HTML 郵件內容 (TOP 15 精選)
     report_title = f"台股主力四週期連續重押吸籌雷達日報"
+    intelligence_html = generate_intelligence_html_section(reversal_df, wash_df, sync_df, profile_df, cross_df)
     html_content = generate_multi_period_html_report(
         reports_dict=reports_dict,
         latest_date=latest_date,
         report_title=report_title,
-        top_display_n=15
+        top_display_n=15,
+        extra_sections_html=intelligence_html
     )
 
-    # 5. 生成包含 4 個 Sheet 的 Excel 附件
+    # 5. 生成包含 4 個 Sheet 的 Excel 附件 (否附加 5 個進階情報工作表)
     excel_filename = f"主力四週期重押雷達_{latest_date}.xlsx"
     excel_path = os.path.join(args.output_dir, excel_filename)
     generate_multi_sheet_excel(reports_dict, excel_path)
+    append_intelligence_sheets_to_excel(excel_path, reversal_df, wash_df, sync_df, profile_df, cross_df)
 
     # 儲存本機 HTML 備份
     html_backup_path = os.path.join(args.output_dir, f"multi_period_report_{latest_date}.html")
