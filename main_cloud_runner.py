@@ -180,22 +180,45 @@ def main():
     print(f"    - 集團同步進出: {len(sync_df):,} 組")
     print(f"    - 跨股同步布局: {len(cross_df):,} 組")
 
+    # 3.2 執行尾盤放量站上 VWAP 與主力逆向歸因雷達
+    tail_vwap_df = pd.DataFrame()
+    tail_vwap_html = ""
+    try:
+        from reverse_broker_matcher import (
+            scan_tail_vwap_and_attribute,
+            generate_tail_vwap_html_section,
+            append_tail_vwap_sheet_to_excel
+        )
+        target_dir = args.local_dir if (args.local_dir and os.path.exists(args.local_dir)) else (
+            "./temp_cache_parquet" if os.path.exists("./temp_cache_parquet") else "./output"
+        )
+        print(f"[*] 正在運算最新交易日 ({latest_date}) 尾盤放量站上 VWAP 主力歸因雷達...")
+        tail_vwap_df = scan_tail_vwap_and_attribute(data_dir=target_dir, target_date=latest_date)
+        if not tail_vwap_df.empty:
+            tail_vwap_html = generate_tail_vwap_html_section(tail_vwap_df, top_n=10)
+            print(f"[✓] 成功識別 {len(tail_vwap_df)} 檔尾盤強勢標的與推手分點！")
+    except Exception as e:
+        print(f"[!] 尾盤放量站上 VWAP 運算異常 (跳過): {e}")
+
     # 4. 生成四週期 HTML 郵件內容 (每週期僅 TOP 8，控制郵件長度提高可讀性)
     report_title = f"台股主力四週期連續重押吸籌雷達日報"
     intelligence_html = generate_intelligence_html_section(reversal_df, wash_df, sync_df, profile_df, cross_df, divergence_df=divergence_df)
+    combined_extra_html = tail_vwap_html + intelligence_html
     html_content = generate_multi_period_html_report(
         reports_dict=reports_dict,
         latest_date=latest_date,
         report_title=report_title,
         top_display_n=8,
-        extra_sections_html=intelligence_html
+        extra_sections_html=combined_extra_html
     )
 
-    # 5. 生成包含 4 個 Sheet 的 Excel 附件 (否附加 5 個進階情報工作表)
+    # 5. 生成包含 4 個 Sheet 的 Excel 附件 (附加 5 個進階情報工作表與 1 個尾盤歸因工作表)
     excel_filename = f"主力四週期重押雷達_{latest_date}.xlsx"
     excel_path = os.path.join(args.output_dir, excel_filename)
     generate_multi_sheet_excel(reports_dict, excel_path)
     append_intelligence_sheets_to_excel(excel_path, reversal_df, wash_df, sync_df, profile_df, cross_df, divergence_df=divergence_df)
+    if not tail_vwap_df.empty:
+        append_tail_vwap_sheet_to_excel(excel_path, tail_vwap_df)
 
     # 儲存本機 HTML 備份
     html_backup_path = os.path.join(args.output_dir, f"multi_period_report_{latest_date}.html")
