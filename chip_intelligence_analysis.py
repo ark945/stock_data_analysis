@@ -121,6 +121,7 @@ def detect_broker_sync_group(
     if not files:
         return pd.DataFrame()
 
+    stock_names = get_stock_name_map()
     broker_names = get_broker_name_map()
 
     sql = f"""
@@ -141,13 +142,14 @@ def detect_broker_sync_group(
         pairs AS (
             SELECT a.broker_id AS broker_a, b.broker_id AS broker_b,
                 COUNT(*) AS co_days,
-                COUNT(DISTINCT a.symbol) AS co_stocks
+                COUNT(DISTINCT a.symbol) AS co_stocks,
+                STRING_AGG(DISTINCT a.symbol, '、') AS co_stock_list
             FROM buy_side a
             JOIN buy_side b ON a.symbol = b.symbol AND a.trade_date = b.trade_date AND a.broker_id < b.broker_id
             GROUP BY a.broker_id, b.broker_id
             HAVING COUNT(*) >= {min_co_days}
         )
-        SELECT p.broker_a, p.broker_b, p.co_days, p.co_stocks,
+        SELECT p.broker_a, p.broker_b, p.co_days, p.co_stocks, p.co_stock_list,
             ROUND(p.co_days * 100.0 / LEAST(aa.active_events, bb.active_events), 1) AS sync_ratio_pct
         FROM pairs p
         JOIN broker_activity aa ON p.broker_a = aa.broker_id
@@ -162,7 +164,10 @@ def detect_broker_sync_group(
 
     df["分點A"] = df["broker_a"].apply(lambda b: f"{b} {broker_names.get(b, '')}".strip())
     df["分點B"] = df["broker_b"].apply(lambda b: f"{b} {broker_names.get(b, '')}".strip())
-    return df[["分點A", "分點B", "co_days", "co_stocks", "sync_ratio_pct"]].rename(
+    df["同步標的清單"] = df["co_stock_list"].apply(
+        lambda s: "、".join(f"{sym}{stock_names.get(sym, '')}" for sym in s.split("、"))
+    )
+    return df[["分點A", "分點B", "co_days", "co_stocks", "sync_ratio_pct", "同步標的清單"]].rename(
         columns={"co_days": "同步買超天數", "co_stocks": "同步標的檔數", "sync_ratio_pct": "同步比例(%)"}
     ).reset_index(drop=True)
 
@@ -274,60 +279,67 @@ def generate_intelligence_html_section(
     sync_df: pd.DataFrame,
     profile_df: pd.DataFrame,
     cross_df: pd.DataFrame,
-    top_n: int = 3
+    top_n: int = 8
 ) -> str:
-    """生成「進階籌碼情報」精簡摘要 HTML 區塊 (單一卡片、每類僅前3筆，完整清單請見附件 Excel)"""
+    """
+    生成「進階籌碼情報」摘要 HTML 區塊，以 CSS-only (radio+label，無 JavaScript) 頁簽切換四大類，每類可列較多筆
+    注意：CSS-only 頁簽在 Gmail/Apple Mail 等現代信箱可正常切換，但部分舊版 Outlook 桌機版可能會直接把四個頁籤內容全部攤開顯示
+    (屬於優雅降級，不會破版，只是失去切換互動效果)；本機瀏覽器開啟 HTML 檔案時一定能正常運作
+    完整清單仍以附件 Excel 為準
+    """
 
-    def _sub_section(title: str, color: str, items: List[str]) -> str:
-        if not items:
-            return ""
-        rows = "".join(
-            f'<div style="font-size:12px; color:#374151; padding: 3px 0;">・{it}</div>' for it in items
-        )
-        return f"""
-            <div style="margin-top: 10px;">
-                <div style="font-size: 12.5px; font-weight: 700; color: {color};">{title}</div>
-                {rows}
-            </div>
-        """
+    def _row_line(text: str) -> str:
+        return f'<div style="font-size:12px; color:#374151; padding: 4px 0; border-bottom: 1px solid #f3f4f6;">・{text}</div>'
 
-    reversal_items = []
-    if not reversal_df.empty:
-        for _, r in reversal_df.head(top_n).iterrows():
-            reversal_items.append(
-                f"<strong>{r['股票標的']}</strong> ({r['主力分點']}) +{r['net_amt_yi']:.1f}億→轉賣{r['recent_net_amt_yi']:.1f}億"
-            )
+    reversal_rows = "".join(
+        _row_line(f"<strong>{r['股票標的']}</strong> ({r['主力分點']}) 長期買超 +{r['net_amt_yi']:.1f}億 → 近期轉賣 {r['recent_net_amt_yi']:.1f}億")
+        for _, r in reversal_df.head(top_n).iterrows()
+    ) if not reversal_df.empty else '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無符合條件之標的</div>'
 
-    sync_items = []
-    if not sync_df.empty:
-        for _, r in sync_df.head(top_n).iterrows():
-            sync_items.append(
-                f"<strong>{r['分點A']}</strong> ↔ <strong>{r['分點B']}</strong>：同步 {r['同步買超天數']} 天/{r['同步標的檔數']} 檔 ({r['同步比例(%)']:.0f}%)"
-            )
+    sync_rows = "".join(
+        _row_line(f"<strong>{r['分點A']}</strong> ↔ <strong>{r['分點B']}</strong>：同步買超 {r['同步買超天數']} 天 / {r['同步標的檔數']} 檔 (同步比例 {r['同步比例(%)']:.0f}%)　→　{r['同步標的清單'][:60]}{'...' if len(r['同步標的清單']) > 60 else ''}")
+        for _, r in sync_df.head(top_n).iterrows()
+    ) if not sync_df.empty else '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無符合條件之標的</div>'
 
-    cross_items = []
-    if not cross_df.empty:
-        for _, r in cross_df.head(top_n).iterrows():
-            cross_items.append(f"<strong>{r['主力分點']}</strong>：同時點火 {r['股票數']} 檔 ({r['標的清單'][:40]}{'...' if len(r['標的清單']) > 40 else ''})")
+    cross_rows = "".join(
+        _row_line(f"<strong>{r['主力分點']}</strong>：同時點火 {r['股票數']} 檔 ({r['標的清單'][:60]}{'...' if len(r['標的清單']) > 60 else ''})")
+        for _, r in cross_df.head(top_n).iterrows()
+    ) if not cross_df.empty else '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無符合條件之標的</div>'
 
-    sections = "".join([
-        _sub_section("⚠️ 主力翻臉出貨預警", "#dc2626", reversal_items),
-        _sub_section("🔗 集團同步進出", "#7c3aed", sync_items),
-        _sub_section("🎯 跨股同步布局", "#0891b2", cross_items),
-    ])
-
-    if not sections:
-        sections = '<div style="font-size:12px; color:#9ca3af; padding: 6px 0;">本期無符合條件之進階情報項目</div>'
-
-    wash_note = f"另掃出 {len(wash_df):,} 筆同日對敲雜訊、{len(profile_df):,} 筆分點側寫，完整清單請見附件 Excel。" if not wash_df.empty else "完整清單請見附件 Excel。"
+    wash_rows = "".join(
+        _row_line(f"{r['trade_date']} <strong>{r['股票標的']}</strong> ({r['主力分點']})：買 {r['buy_vol_sheets']:.0f}張 / 賣 {r['sell_vol_sheets']:.0f}張 (重疊度 {r['overlap_ratio']*100:.0f}%)")
+        for _, r in wash_df.head(top_n).iterrows()
+    ) if not wash_df.empty else '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無明顯同日對敲雜訊</div>'
 
     html = f"""
         <div style="padding: 4px 20px 14px 20px;">
-            <div style="border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff; padding: 12px 16px;">
-                <div style="font-size: 14px; font-weight: 800; color: #0f172a;">🕵️ 進階籌碼情報摘要 (各項僅列前 {top_n} 筆)</div>
-                {sections}
-                <div style="font-size: 11px; color: #9ca3af; margin-top: 10px;">{wash_note}</div>
+            <div style="font-size: 15px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">🕵️ 進階籌碼情報 (點擊頁籤切換分類，各項顯示前 {top_n} 筆；完整清單請見附件 Excel)</div>
+            <style>
+                .intel-panel {{ display: none; padding: 10px 14px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; background: #ffffff; }}
+                #intel-tab-1:checked ~ #intel-panel-1,
+                #intel-tab-2:checked ~ #intel-panel-2,
+                #intel-tab-3:checked ~ #intel-panel-3,
+                #intel-tab-4:checked ~ #intel-panel-4 {{ display: block; }}
+                .intel-tab-label {{ display: inline-block; padding: 8px 12px; font-size: 12.5px; font-weight: 700; color: #64748b; background: #f1f5f9; border: 1px solid #e2e8f0; border-bottom: none; border-radius: 8px 8px 0 0; cursor: pointer; margin-right: 2px; }}
+                #intel-tab-1:checked ~ .intel-tab-labels label[for="intel-tab-1"],
+                #intel-tab-2:checked ~ .intel-tab-labels label[for="intel-tab-2"],
+                #intel-tab-3:checked ~ .intel-tab-labels label[for="intel-tab-3"],
+                #intel-tab-4:checked ~ .intel-tab-labels label[for="intel-tab-4"] {{ background: #ffffff; color: #0f172a; border-bottom: 1px solid #ffffff; margin-bottom: -1px; }}
+            </style>
+            <input type="radio" name="intel-tab" id="intel-tab-1" checked style="display:none;">
+            <input type="radio" name="intel-tab" id="intel-tab-2" style="display:none;">
+            <input type="radio" name="intel-tab" id="intel-tab-3" style="display:none;">
+            <input type="radio" name="intel-tab" id="intel-tab-4" style="display:none;">
+            <div class="intel-tab-labels">
+                <label class="intel-tab-label" for="intel-tab-1">⚠️ 出貨預警 ({len(reversal_df)})</label>
+                <label class="intel-tab-label" for="intel-tab-2">🔗 集團同步進出 ({len(sync_df)})</label>
+                <label class="intel-tab-label" for="intel-tab-3">🎯 跨股同步布局 ({len(cross_df)})</label>
+                <label class="intel-tab-label" for="intel-tab-4">🌀 隔日沖雜訊 ({len(wash_df)})</label>
             </div>
+            <div id="intel-panel-1" class="intel-panel">{reversal_rows}</div>
+            <div id="intel-panel-2" class="intel-panel">{sync_rows}</div>
+            <div id="intel-panel-3" class="intel-panel">{cross_rows}</div>
+            <div id="intel-panel-4" class="intel-panel">{wash_rows}</div>
         </div>
     """
     return html
