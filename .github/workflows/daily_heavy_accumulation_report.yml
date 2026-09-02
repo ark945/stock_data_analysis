@@ -71,6 +71,16 @@ jobs:
         run: |
           python main_cloud_runner.py --output-dir ./daily_reports
 
+      - name: 執行主力出貨/逃離雷達並派發 Email (反向重押偵測)
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: |
+          python find_exit_cases.py --data-dir ./temp_cache_parquet --output ./daily_reports/exit_distribution_cases.xlsx --email
+
       - name: 保存產出報表 (僅 HTML 與 Excel)
         if: always()
         uses: actions/upload-artifact@v4
