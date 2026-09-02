@@ -40,56 +40,37 @@ def get_stock_name_map() -> Dict[str, str]:
         except Exception:
             pass
 
-    name_map = {}
+    # 呼叫建置模組生成
     try:
-        r = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=8)
-        if r.status_code == 200:
-            for d in r.json():
-                c = str(d.get("Code", "")).strip()
-                n = str(d.get("Name", "")).strip()
-                if c and n:
-                    name_map[c] = n
+        from update_stock_mappings import build_stock_mappings
+        name_map, _ = build_stock_mappings(os.path.dirname(__file__))
+        return name_map
     except Exception:
         pass
 
-    try:
-        r = requests.get("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", timeout=8)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tr in soup.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) >= 2:
-                    parts = tds[0].text.strip().split("\u3000")
-                    if len(parts) >= 2:
-                        c, n = parts[0].strip(), parts[1].strip()
-                        if c and n and c not in name_map:
-                            name_map[c] = n
-    except Exception:
-        pass
+    return {"4546": "長亨", "3644": "凌嘉科", "2059": "川湖", "2330": "台積電"}
 
-    try:
-        r = requests.get("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", timeout=8)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tr in soup.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) >= 2:
-                    parts = tds[0].text.strip().split("\u3000")
-                    if len(parts) >= 2:
-                        c, n = parts[0].strip(), parts[1].strip()
-                        if c and n and c not in name_map:
-                            name_map[c] = n
-    except Exception:
-        pass
 
-    if len(name_map) > 100:
+def get_stock_market_map() -> Dict[str, str]:
+    """取得股票代號對應市場別字典 (上市/上櫃/興櫃) (優先讀取快取)"""
+    cache_path = os.path.join(os.path.dirname(__file__), "stock_market_map.json")
+    if os.path.exists(cache_path):
         try:
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(name_map, f, ensure_ascii=False, indent=2)
+            with open(cache_path, "r", encoding="utf-8") as f:
+                market_map = json.load(f)
+                if len(market_map) > 500:
+                    return market_map
         except Exception:
             pass
 
-    return name_map
+    try:
+        from update_stock_mappings import build_stock_mappings
+        _, market_map = build_stock_mappings(os.path.dirname(__file__))
+        return market_map
+    except Exception:
+        pass
+
+    return {"4546": "興櫃", "3644": "興櫃", "2059": "上市", "2330": "上市"}
 
 
 def get_broker_name_map() -> Dict[str, str]:
@@ -156,7 +137,10 @@ def scan_heavy_accumulation(
         print(f"[!] 於目錄 {data_dir} 未找到任何 Parquet 檔案。")
         return pd.DataFrame()
 
-    absr1_files = [f.replace("\\", "/") for f in raw_files if "finmind" not in os.path.basename(f).lower()]
+    absr1_files = [
+        f.replace("\\", "/") for f in raw_files
+        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+    ]
     files = absr1_files if absr1_files else [f.replace("\\", "/") for f in raw_files]
     print(f"==================================================")
     print(f"[*] 主力波段吸籌雷達啟動 (川湖-凱基三多模式掃描)")
@@ -295,13 +279,16 @@ def scan_heavy_accumulation(
     lst_dt = pd.to_datetime(res_df["last_date"])
     res_df["accum_days"] = (lst_dt - ign_dt).dt.days + 1
 
+    stock_markets = get_stock_market_map()
+
     # 計算吸籌強度評分 Score (0 ~ 100 分)
     amt_score = np.clip(np.log10(np.maximum(1.0, res_df["net_amt_yi"] * 100000.0)) * 8.0, 0, 40.0)
     ratio_score = np.clip((res_df["buy_ratio_pct"] / 100.0 - 0.5) * 60.0, 0, 30.0)
     day_score = np.clip(res_df["buy_day_pct"] * 0.3, 0, 30.0)
     res_df["score"] = (amt_score + ratio_score + day_score).round(1)
 
-    res_df["股票標的"] = res_df["symbol"].apply(lambda s: f"{s}-{stock_names.get(s, '未知')}")
+    res_df["市場別"] = res_df["symbol"].apply(lambda s: stock_markets.get(s, "上市" if str(s).isdigit() and int(s) < 3000 else "上櫃"))
+    res_df["股票標的"] = res_df.apply(lambda r: f"{r['symbol']}-{stock_names.get(r['symbol'], '未知')}({r['市場別']})", axis=1)
     res_df["券商分點"] = res_df["broker_id"].apply(lambda b: f"{b}-{broker_names.get(b, '未知分點')}")
 
     chinese_col_map = {
@@ -325,7 +312,7 @@ def scan_heavy_accumulation(
     res_df.rename(columns=chinese_col_map, inplace=True)
 
     ordered_cols = [
-        "股票標的", "券商分點", "主力點火起算日", "吃貨歷時(天)", "資料區間起日", "最新活躍日", "進出天數",
+        "股票標的", "市場別", "券商分點", "主力點火起算日", "吃貨歷時(天)", "資料區間起日", "最新活躍日", "進出天數",
         "買超天數", "買超天數佔比(%)", "累計買進(張)", "累計賣出(張)",
         "累計淨買超(張)", "買進純度佔比(%)", "買進均價/主力成本(元)",
         "賣出均價(元)", "買進總金額(億元)", "淨買超金額(億元)", "主力吸籌強度評分"

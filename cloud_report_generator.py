@@ -22,7 +22,7 @@ import pandas as pd
 import numpy as np
 
 # 導入名稱對照模組
-from find_similar_cases import get_stock_name_map, get_broker_name_map
+from find_similar_cases import get_stock_name_map, get_stock_market_map, get_broker_name_map
 
 
 def run_heavy_accumulation_analysis(
@@ -46,7 +46,10 @@ def run_heavy_accumulation_analysis(
         return pd.DataFrame(), {}
 
     # 過濾出標準分點彙總檔案 (api_absr1)
-    absr1_files = [f.replace("\\", "/") for f in parquet_files if "finmind" not in os.path.basename(f).lower()]
+    absr1_files = [
+        f.replace("\\", "/") for f in parquet_files
+        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+    ]
     if not absr1_files:
         absr1_files = [f.replace("\\", "/") for f in parquet_files]
 
@@ -183,10 +186,12 @@ def run_heavy_accumulation_analysis(
     else:
         df.sort_values(by=["net_amt_yi", "score"], ascending=[False, False], inplace=True)
 
+    stock_markets = get_stock_market_map()
     df["stock_name"] = df["symbol"].apply(lambda s: stock_names.get(s, ""))
+    df["market"] = df["symbol"].apply(lambda s: stock_markets.get(s, "上市" if str(s).isdigit() and int(s) < 3000 else "上櫃"))
     df["broker_name"] = df["broker_id"].apply(lambda b: broker_names.get(b, ""))
 
-    df["股票標的"] = df.apply(lambda r: f"{r['symbol']} {r['stock_name']}".strip(), axis=1)
+    df["股票標的"] = df.apply(lambda r: f"{r['symbol']} {r['stock_name']} ({r['market']})".strip(), axis=1)
     df["主力分點"] = df.apply(lambda r: f"{r['broker_id']} {r['broker_name']}".strip(), axis=1)
 
     # 附加回測報酬率 (點火日→最新收盤價之漲跌幅) 與分點成交集中度 (需提供同期收盤價檔案)
@@ -275,13 +280,22 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
         
         tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:2px;">波段佈局</span>'
 
+        # 市場別標籤徽章
+        m_type = row.get("market", "上市")
+        if m_type == "上市":
+            m_badge = '<span style="background-color: #e6f7ff; color: #096dd9; border: 1px solid #91d5ff; font-size: 11px; padding: 1px 5px; border-radius: 3px; font-weight: bold; margin-left: 4px;">上市</span>'
+        elif m_type == "上櫃":
+            m_badge = '<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; font-size: 11px; padding: 1px 5px; border-radius: 3px; font-weight: bold; margin-left: 4px;">上櫃</span>'
+        else:
+            m_badge = f'<span style="background-color: #f9f0ff; color: #722ed1; border: 1px solid #d3adf7; font-size: 11px; padding: 1px 5px; border-radius: 3px; font-weight: bold; margin-left: 4px;">{m_type}</span>'
+
         table_rows_html += f"""
         <tr style="border-bottom: 1px solid #f0f0f0;">
             <td style="padding: 10px 8px; text-align: center; white-space: nowrap;">
                 <span style="background-color: {rank_badge_bg}; color: #ffffff; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: bold;">{rank}</span>
             </td>
             <td style="padding: 10px; min-width: 190px;">
-                <div style="font-weight: bold; font-size: 14px; color: #111827; white-space: nowrap;">{row['股票標的']}</div>
+                <div style="font-weight: bold; font-size: 14px; color: #111827; white-space: nowrap;">{row['symbol']} {row['stock_name']} {m_badge}</div>
                 <div style="margin-top: 2px; white-space: nowrap;">{tag_html}</div>
             </td>
             <td style="padding: 10px; min-width: 160px; white-space: nowrap;">
@@ -470,6 +484,7 @@ def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_exc
 
     export_cols = {
         "股票標的": "股票標的",
+        "market": "市場別",
         "主力分點": "主力券商分點",
         "ignition_date": "主力點火起算日",
         "accum_days": "吃貨歷時(天)",
@@ -514,6 +529,7 @@ def generate_excel_report(df: pd.DataFrame, output_excel_path: str):
 
     export_cols = {
         "股票標的": "股票標的",
+        "market": "市場別",
         "主力分點": "主力券商分點",
         "ignition_date": "主力點火起算日",
         "accum_days": "吃貨歷時(天)",
@@ -550,13 +566,25 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="本地測試並產生預覽 HTML")
     args = parser.parse_args()
 
-    files = sorted(glob.glob(os.path.join(args.data_dir, "*.parquet")))
-    if not files:
-        print(f"[!] 目錄 {args.data_dir} 中無 Parquet 檔案。")
+    all_files = sorted(glob.glob(os.path.join(args.data_dir, "*.parquet")))
+    absr1_all = [
+        f for f in all_files
+        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+    ]
+    close_all = [
+        f for f in all_files
+        if "close1" in os.path.basename(f).lower()
+    ]
+
+    if not absr1_all:
+        print(f"[!] 目錄 {args.data_dir} 中無分點 Parquet 檔案。")
         sys.exit(0)
 
-    print(f"[*] 找到 {len(files)} 個 Parquet 檔案，開始執行重押分析...")
-    res_df, summary_info = run_heavy_accumulation_analysis(files)
+    target_files = absr1_all[-args.lookback_days:] if len(absr1_all) >= args.lookback_days else absr1_all
+    target_close = close_all[-args.lookback_days:] if len(close_all) >= args.lookback_days else close_all
+
+    print(f"[*] 鎖定近 {len(target_files)} 個交易日分點資料，開始執行重押分析...")
+    res_df, summary_info = run_heavy_accumulation_analysis(target_files, close_price_files=target_close)
 
     html_content = generate_multi_period_html_report({"5d": res_df})
     preview_path = os.path.join(args.data_dir, "preview_report.html")

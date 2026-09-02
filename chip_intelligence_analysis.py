@@ -16,7 +16,7 @@ import duckdb
 import pandas as pd
 import numpy as np
 
-from find_similar_cases import get_stock_name_map, get_broker_name_map
+from find_similar_cases import get_stock_name_map, get_stock_market_map, get_broker_name_map
 
 
 def _norm(files: List[str]) -> List[str]:
@@ -75,6 +75,7 @@ def detect_wash_trading(
         return pd.DataFrame()
 
     stock_names = get_stock_name_map()
+    stock_markets = get_stock_market_map()
     broker_names = get_broker_name_map()
 
     sql = f"""
@@ -98,7 +99,9 @@ def detect_wash_trading(
     if df.empty:
         return df
 
-    df["股票標的"] = df["symbol"].apply(lambda s: f"{s} {stock_names.get(s, '')}".strip())
+    df["股票標的"] = df["symbol"].apply(
+        lambda s: f"{s} {stock_names.get(s, '')} ({stock_markets.get(s, '上市' if str(s).isdigit() and int(s) < 3000 else '上櫃')})".strip()
+    )
     df["主力分點"] = df["broker_id"].apply(lambda b: f"{b} {broker_names.get(b, '')}".strip())
     df.sort_values(["overlap_ratio", "buy_vol_sheets"], ascending=[False, False], inplace=True)
     return df[["trade_date", "股票標的", "主力分點", "buy_vol_sheets", "sell_vol_sheets", "overlap_ratio"]].reset_index(drop=True)
@@ -162,10 +165,11 @@ def detect_broker_sync_group(
     if df.empty:
         return df
 
+    stock_markets = get_stock_market_map()
     df["分點A"] = df["broker_a"].apply(lambda b: f"{b} {broker_names.get(b, '')}".strip())
     df["分點B"] = df["broker_b"].apply(lambda b: f"{b} {broker_names.get(b, '')}".strip())
     df["同步標的清單"] = df["co_stock_list"].apply(
-        lambda s: "、".join(f"{sym}{stock_names.get(sym, '')}" for sym in s.split("、"))
+        lambda s: "、".join(f"{sym}{stock_names.get(sym, '')}({stock_markets.get(sym, '上市' if str(sym).isdigit() and int(sym) < 3000 else '上櫃')})" for sym in s.split("、"))
     )
     return df[["分點A", "分點B", "co_days", "co_stocks", "sync_ratio_pct", "同步標的清單"]].rename(
         columns={"co_days": "同步買超天數", "co_stocks": "同步標的檔數", "sync_ratio_pct": "同步比例(%)"}
@@ -185,6 +189,7 @@ def build_broker_profile(
         return pd.DataFrame()
 
     stock_names = get_stock_name_map()
+    stock_markets = get_stock_market_map()
     broker_names = get_broker_name_map()
 
     sql = f"""
@@ -208,7 +213,7 @@ def build_broker_profile(
         g_sorted = g.sort_values("buy_amt_yi", ascending=False)
         top_stocks = g_sorted.head(3)
         top_stock_str = "、".join(
-            f"{s}{stock_names.get(s, '')}" for s in top_stocks["symbol"]
+            f"{s}{stock_names.get(s, '')}({stock_markets.get(s, '上市' if str(s).isdigit() and int(s) < 3000 else '上櫃')})" for s in top_stocks["symbol"]
         )
         weighted_avg_price = np.average(g["avg_price"], weights=g["buy_amt_yi"]) if g["buy_amt_yi"].sum() > 0 else np.nan
         profiles.append({
