@@ -35,7 +35,8 @@ def run_heavy_accumulation_analysis(
     exclude_etf: bool = True,                # 是否過濾 ETF 標的 (預設 True，排除 00 開頭被動標的)
     sort_by: str = "score",                  # 排序方式: "score" (吸籌強度評分優先，推薦) 或 "amt" (金額優先)
     top_n: int = 30,
-    close_price_files: Optional[List[str]] = None  # 同期間每日收盤價 Parquet (api_close1_*)，提供則附加回測報酬率與分點集中度
+    close_price_files: Optional[List[str]] = None,  # 同期間每日收盤價 Parquet (api_close1_*)，提供則附加回測報酬率與分點集中度
+    position_lookback_days: int = 20         # 點火日相對高低位置之回看交易日數 (需 close_price_files 浵蓋此範圍才有效)
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     透過 DuckDB 執行川湖+凱基三多重押模型分析 (含主力點火起算日、吃貨歷時與吸籌強度評分排序)
@@ -200,7 +201,7 @@ def run_heavy_accumulation_analysis(
     if close_price_files:
         close_files_norm = [f.replace("\\", "/") for f in close_price_files]
         price_df = duckdb.query(f"""
-            SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close, volume
+            SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close, high, low, volume
             FROM read_parquet({close_files_norm})
         """).to_df()
 
@@ -213,6 +214,63 @@ def run_heavy_accumulation_analysis(
             ((df["latest_close"] - df["ignition_close"]) / df["ignition_close"] * 100).round(2),
             np.nan
         )
+
+        # 成本偏離度：以主力真實買進均價（而非點火日收盤價）對比最新收盤價，反映主力目前真實損益
+        df["cost_deviation_pct"] = np.where(
+            df["latest_close"].notna() & df["buy_avg_price"].notna() & (df["buy_avg_price"] > 0),
+            ((df["latest_close"] - df["buy_avg_price"]) / df["buy_avg_price"] * 100).round(2),
+            np.nan
+        )
+
+        # 持有期間最大漲幅/最大回撤：於點火日至最新活躍日區間內，抓取最高/最低價相對點火日收盤價之乖離
+        period_pairs = df[["symbol", "ignition_date", "last_date"]].drop_duplicates()
+        period_range_df = duckdb.query("""
+            SELECT p.symbol, p.ignition_date, p.last_date,
+                MAX(c.high) AS period_max_high,
+                MIN(c.low) AS period_min_low
+            FROM period_pairs p
+            JOIN price_df c
+              ON p.symbol = c.symbol
+             AND c.trade_date BETWEEN p.ignition_date AND p.last_date
+            GROUP BY p.symbol, p.ignition_date, p.last_date
+        """).to_df()
+        df = df.merge(period_range_df, on=["symbol", "ignition_date", "last_date"], how="left")
+        df["period_max_gain_pct"] = np.where(
+            df["ignition_close"].notna() & df["period_max_high"].notna() & (df["ignition_close"] > 0),
+            ((df["period_max_high"] - df["ignition_close"]) / df["ignition_close"] * 100).round(2),
+            np.nan
+        )
+        df["period_max_drawdown_pct"] = np.where(
+            df["ignition_close"].notna() & df["period_min_low"].notna() & (df["ignition_close"] > 0),
+            ((df["period_min_low"] - df["ignition_close"]) / df["ignition_close"] * 100).round(2),
+            np.nan
+        )
+        df.drop(columns=["period_max_high", "period_min_low"], inplace=True)
+
+        # 點火日相對高低位置：以點火日往前回看 N 交易日窗口內的最高/最低價，判斷點火時是低接還是追價
+        position_df = duckdb.query(f"""
+            WITH ordered AS (
+                SELECT symbol, trade_date,
+                    MIN(low) OVER (
+                        PARTITION BY symbol ORDER BY trade_date
+                        ROWS BETWEEN {position_lookback_days - 1} PRECEDING AND CURRENT ROW
+                    ) AS window_min_low,
+                    MAX(high) OVER (
+                        PARTITION BY symbol ORDER BY trade_date
+                        ROWS BETWEEN {position_lookback_days - 1} PRECEDING AND CURRENT ROW
+                    ) AS window_max_high
+                FROM price_df
+            )
+            SELECT symbol, trade_date AS ignition_date, window_min_low, window_max_high
+            FROM ordered
+        """).to_df()
+        df = df.merge(position_df, on=["symbol", "ignition_date"], how="left")
+        df["position_in_range_pct"] = np.where(
+            df["ignition_close"].notna() & df["window_max_high"].notna() & df["window_min_low"].notna() & (df["window_max_high"] > df["window_min_low"]),
+            ((df["ignition_close"] - df["window_min_low"]) / (df["window_max_high"] - df["window_min_low"]) * 100).round(1),
+            np.nan
+        )
+        df.drop(columns=["window_min_low", "window_max_high"], inplace=True)
 
         period_vol = price_df.groupby("symbol")["volume"].sum().rename("period_total_vol").reset_index()
         df = df.merge(period_vol, on="symbol", how="left")
@@ -231,6 +289,10 @@ def run_heavy_accumulation_analysis(
         df["ignition_close"] = np.nan
         df["latest_close"] = np.nan
         df["return_pct"] = np.nan
+        df["cost_deviation_pct"] = np.nan
+        df["period_max_gain_pct"] = np.nan
+        df["period_max_drawdown_pct"] = np.nan
+        df["position_in_range_pct"] = np.nan
         df["concentration_pct"] = np.nan
 
     # 摘要統計
@@ -277,7 +339,15 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
             tags.append(f'<span style="background-color: #fff0f6; color: #c41d7f; border: 1px solid #ffadd2; {tag_style}">🎯 絕對鎖碼</span>')
         if row["net_amt_yi"] >= 1.0:
             tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
-        
+
+        # 點火日相對高低位置標籤 (需 close_price_files 才有數值)
+        position_pct = row.get("position_in_range_pct")
+        if pd.notna(position_pct):
+            if position_pct <= 30:
+                tags.append(f'<span style="background-color: #e6fffb; color: #08979c; border: 1px solid #87e8de; {tag_style}">📉 低檔佈局</span>')
+            elif position_pct >= 70:
+                tags.append(f'<span style="background-color: #fff2e8; color: #d4380d; border: 1px solid #ffbb96; {tag_style}">📈 高檔追價</span>')
+
         tag_html = " ".join(tags) if tags else '<span style="color:#9ca3af; font-size:11px; display:inline-block; margin-top:2px;">波段佈局</span>'
 
         # 市場別標籤徽章
@@ -322,9 +392,10 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
                     {row['score']} 分
                 </div>
             </td>
-            <td style="padding: 10px 8px; text-align: right; min-width: 100px; white-space: nowrap;">
-                {_format_return_badge(row.get('return_pct'))}
-                <div style="font-size: 10px; color: #9ca3af; margin-top: 2px;">集中度 {_format_concentration(row.get('concentration_pct'))}</div>
+            <td style="padding: 10px 8px; text-align: right; min-width: 130px; white-space: nowrap;">
+                {_format_cost_deviation(row.get('cost_deviation_pct'))}
+                <div style="font-size: 10px; color: #9ca3af; margin-top: 2px;">{_format_period_range(row.get('period_max_gain_pct'), row.get('period_max_drawdown_pct'))}</div>
+                <div style="font-size: 10px; color: #9ca3af;">集中度 {_format_concentration(row.get('concentration_pct'))}</div>
             </td>
         </tr>
         """
@@ -338,6 +409,23 @@ def _format_return_badge(return_pct) -> str:
     color = "#dc2626" if return_pct >= 0 else "#16a34a"
     sign = "+" if return_pct >= 0 else ""
     return f'<span style="font-weight:bold; font-size:13px; color:{color};">{sign}{return_pct:.1f}%</span>'
+
+
+def _format_cost_deviation(cost_deviation_pct) -> str:
+    """將成本偏離度格式化為主力損益徽章 (資料缺漏時顯示 N/A)"""
+    if cost_deviation_pct is None or pd.isna(cost_deviation_pct):
+        return '<span style="color:#9ca3af; font-size:12px;">N/A</span>'
+    color = "#dc2626" if cost_deviation_pct >= 0 else "#16a34a"
+    sign = "+" if cost_deviation_pct >= 0 else ""
+    note = "已獲利" if cost_deviation_pct >= 0 else "已套牢"
+    return f'<span style="font-weight:bold; font-size:13px; color:{color};">{sign}{cost_deviation_pct:.1f}% {note}</span>'
+
+
+def _format_period_range(max_gain_pct, max_drawdown_pct) -> str:
+    """將持有期間最大漲幅/最大回撤格式化為文字 (資料缺漏時顯示 N/A)"""
+    gain_str = f"+{max_gain_pct:.1f}%" if pd.notna(max_gain_pct) else "N/A"
+    drawdown_str = f"{max_drawdown_pct:.1f}%" if pd.notna(max_drawdown_pct) else "N/A"
+    return f"最高 {gain_str} ／ 最深 {drawdown_str}"
 
 
 def _format_concentration(concentration_pct) -> str:
@@ -402,7 +490,7 @@ def generate_multi_period_html_report(
                             <th style="padding: 8px 10px; text-align: right; min-width: 110px; white-space: nowrap;">淨買張數 / 純度</th>
                             <th style="padding: 8px 10px; text-align: right; min-width: 95px; white-space: nowrap;">主力買均價</th>
                             <th style="padding: 8px; text-align: center; min-width: 70px; white-space: nowrap;">吸籌評分</th>
-                            <th style="padding: 8px 10px; text-align: right; min-width: 100px; white-space: nowrap;">點火後報酬率 / 集中度</th>
+                            <th style="padding: 8px 10px; text-align: right; min-width: 130px; white-space: nowrap;">成本偏離度 / 波段區間 / 集中度</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -504,6 +592,10 @@ def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_exc
         "score": "主力吸籌強度評分",
         "ignition_close": "點火日收盤價",
         "latest_close": "最新收盤價",
+        "cost_deviation_pct": "成本偏離度(%)",
+        "period_max_gain_pct": "期間最大漲幅(%)",
+        "period_max_drawdown_pct": "期間最大回撤(%)",
+        "position_in_range_pct": "點火日高低位置(%)",
         "return_pct": "點火後報酬率(%)",
         "concentration_pct": "分點成交集中度(%)"
     }
@@ -549,6 +641,10 @@ def generate_excel_report(df: pd.DataFrame, output_excel_path: str):
         "score": "主力吸籌強度評分",
         "ignition_close": "點火日收盤價",
         "latest_close": "最新收盤價",
+        "cost_deviation_pct": "成本偏離度(%)",
+        "period_max_gain_pct": "期間最大漲幅(%)",
+        "period_max_drawdown_pct": "期間最大回撤(%)",
+        "position_in_range_pct": "點火日高低位置(%)",
         "return_pct": "點火後報酬率(%)",
         "concentration_pct": "分點成交集中度(%)"
     }

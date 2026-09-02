@@ -184,6 +184,8 @@ def build_broker_profile(
 ) -> pd.DataFrame:
     """
     分點擅長股性側寫：統計每個分點過去操作過的股票數、平均操作價位與偏好標的 (依買進金額排序前3檔)
+    若提供 close_price_files，額外附加「目前未實現勝率/加權平均報酬率」
+    (以分點在窗口內的加權買進均價，對比窗口最新收盤價估算的目前部位損益，非真正逐筆進出場回測)
     """
     if not files:
         return pd.DataFrame()
@@ -208,6 +210,25 @@ def build_broker_profile(
     df["avg_price"] = (df["buy_amt"] * 1000.0 / df["buy_vol"]).round(2)
     df["buy_amt_yi"] = (df["buy_amt"] / 100000.0).round(2)
 
+    if close_price_files:
+        price_sql = f"""
+            SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close
+            FROM read_parquet({_norm(close_price_files)})
+        """
+        price_df = duckdb.query(price_sql).to_df()
+        if not price_df.empty:
+            latest_close = price_df.sort_values("trade_date").groupby("symbol")["close"].last().rename("latest_close").reset_index()
+            df = df.merge(latest_close, on="symbol", how="left")
+            df["unrealized_return_pct"] = np.where(
+                df["latest_close"].notna() & (df["avg_price"] > 0),
+                (df["latest_close"] - df["avg_price"]) / df["avg_price"] * 100,
+                np.nan
+            )
+        else:
+            df["unrealized_return_pct"] = np.nan
+    else:
+        df["unrealized_return_pct"] = np.nan
+
     profiles = []
     for broker_id, g in df.groupby("broker_id"):
         g_sorted = g.sort_values("buy_amt_yi", ascending=False)
@@ -216,12 +237,24 @@ def build_broker_profile(
             f"{s}{stock_names.get(s, '')}({stock_markets.get(s, '上市' if str(s).isdigit() and int(s) < 3000 else '上櫃')})" for s in top_stocks["symbol"]
         )
         weighted_avg_price = np.average(g["avg_price"], weights=g["buy_amt_yi"]) if g["buy_amt_yi"].sum() > 0 else np.nan
+
+        valid_ret = g["unrealized_return_pct"].dropna()
+        valid_ret_amt = g.loc[valid_ret.index, "buy_amt_yi"]
+        if not valid_ret.empty and valid_ret_amt.sum() > 0:
+            win_rate_pct = round((valid_ret > 0).mean() * 100, 1)
+            weighted_avg_return_pct = round(np.average(valid_ret, weights=valid_ret_amt), 2)
+        else:
+            win_rate_pct = None
+            weighted_avg_return_pct = None
+
         profiles.append({
             "broker_id": broker_id,
             "主力分點": f"{broker_id} {broker_names.get(broker_id, '')}".strip(),
             "操作標的檔數": g["symbol"].nunique(),
             "加權平均操作價位": round(weighted_avg_price, 1) if pd.notna(weighted_avg_price) else None,
             "總買進金額(億元)": round(g["buy_amt_yi"].sum(), 2),
+            "目前未實現勝率(%)": win_rate_pct,
+            "加權平均未實現報酬率(%)": weighted_avg_return_pct,
             "偏好標的TOP3": top_stock_str
         })
 
@@ -230,6 +263,92 @@ def build_broker_profile(
         return profile_df
     profile_df.sort_values("總買進金額(億元)", ascending=False, inplace=True)
     return profile_df.head(top_n_brokers).drop(columns=["broker_id"]).reset_index(drop=True)
+
+
+def detect_price_volume_divergence(
+    files: List[str],
+    close_price_files: List[str],
+    min_net_amt_yi: float = 0.1,
+    min_ratio_pct: float = 70.0,
+    flat_change_threshold_pct: float = 3.0,
+    top_n: int = 50
+) -> pd.DataFrame:
+    """
+    量價背離偵測：比對分點淨買賣超與同期間股價漲跌幅，找出「反市場邏輯」的操作組合
+    - 🟢 逆勢吸籌：股價平盤/下跌 (漲幅 <= flat_change_threshold_pct)，主力仍高純度大力買超 → 疑似壓低股價默默進貨
+    - 🔴 拉高出貨：股價明顯上漲 (漲幅 >= flat_change_threshold_pct)，主力卻高純度大力賣超 → 疑似趁上漲派貨出場
+    """
+    if not files or not close_price_files:
+        return pd.DataFrame()
+
+    stock_names = get_stock_name_map()
+    stock_markets = get_stock_market_map()
+    broker_names = get_broker_name_map()
+
+    sql = f"""
+        SELECT symbol, broker_id,
+            SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
+            SUM(sell_vol) / 1000.0 AS sell_vol_sheets,
+            SUM(net_amt) / 100000.0 AS net_amt_yi,
+            SUM(buy_vol) * 100.0 / NULLIF(SUM(buy_vol) + SUM(sell_vol), 0) AS buy_ratio_pct
+        FROM read_parquet({_norm(files)})
+        WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
+        GROUP BY symbol, broker_id
+        HAVING ABS(SUM(net_amt) / 100000.0) >= {min_net_amt_yi}
+    """
+    df = duckdb.query(sql).to_df()
+    if df.empty:
+        return df
+    df["buy_ratio_pct"] = df["buy_ratio_pct"].round(1)
+
+    price_sql = f"""
+        SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close
+        FROM read_parquet({_norm(close_price_files)})
+    """
+    price_df = duckdb.query(price_sql).to_df()
+    if price_df.empty:
+        return pd.DataFrame()
+    price_df.sort_values("trade_date", inplace=True)
+    grouped_close = price_df.groupby("symbol")["close"]
+    price_range = pd.DataFrame({
+        "first_close": grouped_close.first(),
+        "last_close": grouped_close.last()
+    }).reset_index()
+    price_range["price_change_pct"] = np.where(
+        price_range["first_close"] > 0,
+        ((price_range["last_close"] - price_range["first_close"]) / price_range["first_close"] * 100).round(2),
+        np.nan
+    )
+
+    df = df.merge(price_range[["symbol", "price_change_pct"]], on="symbol", how="left")
+    df = df[df["price_change_pct"].notna()].copy()
+    if df.empty:
+        return df
+
+    accumulate_mask = (
+        (df["net_amt_yi"] >= min_net_amt_yi) &
+        (df["buy_ratio_pct"] >= min_ratio_pct) &
+        (df["price_change_pct"] <= flat_change_threshold_pct)
+    )
+    distribute_mask = (
+        (df["net_amt_yi"] <= -min_net_amt_yi) &
+        ((100.0 - df["buy_ratio_pct"]) >= min_ratio_pct) &
+        (df["price_change_pct"] >= flat_change_threshold_pct)
+    )
+    df["標籤"] = np.select([accumulate_mask, distribute_mask], ["🟢 逆勢吸籌", "🔴 拉高出貨"], default=None)
+    df = df[df["標籤"].notna()].copy()
+    if df.empty:
+        return df
+
+    df["net_amt_yi"] = df["net_amt_yi"].round(2)
+    df["股票標的"] = df["symbol"].apply(
+        lambda s: f"{s} {stock_names.get(s, '')} ({stock_markets.get(s, '上市' if str(s).isdigit() and int(s) < 3000 else '上櫃')})".strip()
+    )
+    df["主力分點"] = df["broker_id"].apply(lambda b: f"{b} {broker_names.get(b, '')}".strip())
+    df.sort_values(by="net_amt_yi", key=lambda s: s.abs(), ascending=False, inplace=True)
+
+    keep_cols = ["股票標的", "主力分點", "標籤", "net_amt_yi", "buy_ratio_pct", "price_change_pct"]
+    return df[keep_cols].head(top_n).reset_index(drop=True)
 
 
 def detect_cross_stock_sync_buying(
@@ -284,6 +403,7 @@ def generate_intelligence_html_section(
     sync_df: pd.DataFrame,
     profile_df: pd.DataFrame,
     cross_df: pd.DataFrame,
+    divergence_df: pd.DataFrame = None,
     top_n: int = 6
 ) -> str:
     """
@@ -326,10 +446,17 @@ def generate_intelligence_html_section(
         for _, r in wash_df.head(top_n).iterrows()
     ) if not wash_df.empty else '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無明顯同日對敲雜訊</div>'
 
+    divergence_df = divergence_df if divergence_df is not None else pd.DataFrame()
+    divergence_rows = "".join(
+        _row_line(f"{r['標籤']} <strong>{r['股票標的']}</strong> ({r['主力分點']})：淨買超 {r['net_amt_yi']:+.2f}億 / 純度 {r['buy_ratio_pct']:.0f}% ／ 同期股價漲跌 {r['price_change_pct']:+.1f}%")
+        for _, r in divergence_df.head(top_n).iterrows()
+    ) if not divergence_df.empty else '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無明顯量價背離組合</div>'
+
     html = f"""
         <div style="padding: 4px 20px 14px 20px;">
             <div style="font-size: 15px; font-weight: 800; color: #0f172a; margin-bottom: 10px;">🕵️ 進階籌碼情報 (各類顯示前 {top_n} 筆；完整清單請見附件 Excel)</div>
             {_card("⚠️ 主力翻臉出貨預警", "#dc2626", len(reversal_df), reversal_rows)}
+            {_card("📉 量價背離偵測", "#16a34a", len(divergence_df), divergence_rows)}
             {_card("🔗 集團同步進出偵測", "#7c3aed", len(sync_df), sync_rows)}
             {_card("🎯 跨股同步布局偵測", "#0891b2", len(cross_df), cross_rows)}
             {_card("🌀 隔日沖/當沖雜訊", "#6b7280", len(wash_df), wash_rows)}
@@ -344,9 +471,18 @@ def append_intelligence_sheets_to_excel(
     wash_df: pd.DataFrame,
     sync_df: pd.DataFrame,
     profile_df: pd.DataFrame,
-    cross_df: pd.DataFrame
+    cross_df: pd.DataFrame,
+    divergence_df: pd.DataFrame = None
 ) -> None:
-    """將五項進階籌碼情報以額外工作表附加到既有 Excel 報表 (不覆蓋原有工作表，欄位一律轉為中文)"""
+    """將六項進階籌碼情報以額外工作表附加到既有 Excel 報表 (不覆蓋原有工作表，欄位一律轉為中文)"""
+    divergence_export_cols = {
+        "股票標的": "股票標的",
+        "主力分點": "主力分點",
+        "標籤": "背離型態",
+        "net_amt_yi": "淨買超金額(億元)",
+        "buy_ratio_pct": "買進純度佔比(%)",
+        "price_change_pct": "同期股價漲跌幅(%)"
+    }
     reversal_export_cols = {
         "股票標的": "股票標的",
         "主力分點": "主力分點",
@@ -372,8 +508,10 @@ def append_intelligence_sheets_to_excel(
         cols = [c for c in col_map.keys() if c in df.columns]
         return df[cols].rename(columns=col_map)
 
+    divergence_df = divergence_df if divergence_df is not None else pd.DataFrame()
     sheets = {
         "出貨預警": _localize(reversal_df, reversal_export_cols),
+        "量價背離": _localize(divergence_df, divergence_export_cols),
         "隔日沖雜訊": _localize(wash_df, wash_export_cols),
         "集團同步進出": sync_df,
         "分點側寫": profile_df,
@@ -385,4 +523,4 @@ def append_intelligence_sheets_to_excel(
             out_df = df if not df.empty else pd.DataFrame({"狀態": ["本期無符合條件之標的"]})
             out_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-    print(f"[✓] 進階籌碼情報 5 個工作表已附加至: {excel_path}")
+    print(f"[✓] 進階籌碼情報 6 個工作表已附加至: {excel_path}")
