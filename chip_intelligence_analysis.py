@@ -341,10 +341,35 @@ def append_intelligence_sheets_to_excel(
     profile_df: pd.DataFrame,
     cross_df: pd.DataFrame
 ) -> None:
-    """將五項進階籌碼情報以額外工作表附加到既有 Excel 報表 (不覆蓋原有工作表)"""
+    """將五項進階籌碼情報以額外工作表附加到既有 Excel 報表 (不覆蓋原有工作表，欄位一律轉為中文)"""
+    reversal_export_cols = {
+        "股票標的": "股票標的",
+        "主力分點": "主力分點",
+        "net_amt_yi": "長期淨買超金額(億元)",
+        "buy_ratio_pct": "買進純度佔比(%)",
+        "score": "主力吸籌強度評分",
+        "recent_net_amt_yi": "近期淨買超金額(億元)",
+        "recent_sell_vol_sheets": "近期賣出張數",
+        "reversal_severity_pct": "出貨嚴重度(%)"
+    }
+    wash_export_cols = {
+        "trade_date": "交易日期",
+        "股票標的": "股票標的",
+        "主力分點": "主力分點",
+        "buy_vol_sheets": "買進張數",
+        "sell_vol_sheets": "賣出張數",
+        "overlap_ratio": "對敲重疊度"
+    }
+
+    def _localize(df: pd.DataFrame, col_map: Dict[str, str]) -> pd.DataFrame:
+        if df.empty:
+            return df
+        cols = [c for c in col_map.keys() if c in df.columns]
+        return df[cols].rename(columns=col_map)
+
     sheets = {
-        "出貨預警": reversal_df,
-        "隔日沖雜訊": wash_df,
+        "出貨預警": _localize(reversal_df, reversal_export_cols),
+        "隔日沖雜訊": _localize(wash_df, wash_export_cols),
         "集團同步進出": sync_df,
         "分點側寫": profile_df,
         "跨股同步布局": cross_df
