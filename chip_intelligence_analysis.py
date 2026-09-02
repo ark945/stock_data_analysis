@@ -279,17 +279,27 @@ def generate_intelligence_html_section(
     sync_df: pd.DataFrame,
     profile_df: pd.DataFrame,
     cross_df: pd.DataFrame,
-    top_n: int = 8
+    top_n: int = 6
 ) -> str:
     """
-    生成「進階籌碼情報」摘要 HTML 區塊，以 CSS-only (radio+label，無 JavaScript) 頁簽切換四大類，每類可列較多筆
-    注意：CSS-only 頁簽在 Gmail/Apple Mail 等現代信箱可正常切換，但部分舊版 Outlook 桌機版可能會直接把四個頁籤內容全部攤開顯示
-    (屬於優雅降級，不會破版，只是失去切換互動效果)；本機瀏覽器開啟 HTML 檔案時一定能正常運作
-    完整清單仍以附件 Excel 為準
+    生成「進階籌碼情報」摘要 HTML 區塊：靜態堆疊卡片 (無 JavaScript、無 <input>/<style> 互動元件)
+    Gmail (桌機與手機 App) 會直接把 email 內文中的 <input>/<form>/<script> 元素整個移除，
+    CSS-only radio+label 頁簽在 Gmail 完全失效 (已實測確認)，故改回純靜態區塊確保各信箱都能正常顯示
+    每類固定顯示前 top_n 筆，完整清單請見附件 Excel
     """
 
     def _row_line(text: str) -> str:
         return f'<div style="font-size:12px; color:#374151; padding: 4px 0; border-bottom: 1px solid #f3f4f6;">・{text}</div>'
+
+    def _card(title: str, color: str, count: int, rows_html: str) -> str:
+        return f"""
+        <div style="margin-bottom: 14px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #ffffff;">
+            <div style="background-color: #f8fafc; padding: 10px 14px; border-bottom: 2px solid {color};">
+                <div style="font-size: 13px; font-weight: 800; color: #0f172a;">{title} <span style="font-weight:400; color:#9ca3af; font-size:11px;">(共 {count} 組，顯示前 {min(count, top_n)} 筆)</span></div>
+            </div>
+            <div style="padding: 8px 14px;">{rows_html}</div>
+        </div>
+        """
 
     reversal_rows = "".join(
         _row_line(f"<strong>{r['股票標的']}</strong> ({r['主力分點']}) 長期買超 +{r['net_amt_yi']:.1f}億 → 近期轉賣 {r['recent_net_amt_yi']:.1f}億")
@@ -313,33 +323,11 @@ def generate_intelligence_html_section(
 
     html = f"""
         <div style="padding: 4px 20px 14px 20px;">
-            <div style="font-size: 15px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">🕵️ 進階籌碼情報 (點擊頁籤切換分類，各項顯示前 {top_n} 筆；完整清單請見附件 Excel)</div>
-            <style>
-                .intel-panel {{ display: none; padding: 10px 14px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; background: #ffffff; }}
-                #intel-tab-1:checked ~ #intel-panel-1,
-                #intel-tab-2:checked ~ #intel-panel-2,
-                #intel-tab-3:checked ~ #intel-panel-3,
-                #intel-tab-4:checked ~ #intel-panel-4 {{ display: block; }}
-                .intel-tab-label {{ display: inline-block; padding: 8px 12px; font-size: 12.5px; font-weight: 700; color: #64748b; background: #f1f5f9; border: 1px solid #e2e8f0; border-bottom: none; border-radius: 8px 8px 0 0; cursor: pointer; margin-right: 2px; }}
-                #intel-tab-1:checked ~ .intel-tab-labels label[for="intel-tab-1"],
-                #intel-tab-2:checked ~ .intel-tab-labels label[for="intel-tab-2"],
-                #intel-tab-3:checked ~ .intel-tab-labels label[for="intel-tab-3"],
-                #intel-tab-4:checked ~ .intel-tab-labels label[for="intel-tab-4"] {{ background: #ffffff; color: #0f172a; border-bottom: 1px solid #ffffff; margin-bottom: -1px; }}
-            </style>
-            <input type="radio" name="intel-tab" id="intel-tab-1" checked style="display:none;">
-            <input type="radio" name="intel-tab" id="intel-tab-2" style="display:none;">
-            <input type="radio" name="intel-tab" id="intel-tab-3" style="display:none;">
-            <input type="radio" name="intel-tab" id="intel-tab-4" style="display:none;">
-            <div class="intel-tab-labels">
-                <label class="intel-tab-label" for="intel-tab-1">⚠️ 出貨預警 ({len(reversal_df)})</label>
-                <label class="intel-tab-label" for="intel-tab-2">🔗 集團同步進出 ({len(sync_df)})</label>
-                <label class="intel-tab-label" for="intel-tab-3">🎯 跨股同步布局 ({len(cross_df)})</label>
-                <label class="intel-tab-label" for="intel-tab-4">🌀 隔日沖雜訊 ({len(wash_df)})</label>
-            </div>
-            <div id="intel-panel-1" class="intel-panel">{reversal_rows}</div>
-            <div id="intel-panel-2" class="intel-panel">{sync_rows}</div>
-            <div id="intel-panel-3" class="intel-panel">{cross_rows}</div>
-            <div id="intel-panel-4" class="intel-panel">{wash_rows}</div>
+            <div style="font-size: 15px; font-weight: 800; color: #0f172a; margin-bottom: 10px;">🕵️ 進階籌碼情報 (各類顯示前 {top_n} 筆；完整清單請見附件 Excel)</div>
+            {_card("⚠️ 主力翻臉出貨預警", "#dc2626", len(reversal_df), reversal_rows)}
+            {_card("🔗 集團同步進出偵測", "#7c3aed", len(sync_df), sync_rows)}
+            {_card("🎯 跨股同步布局偵測", "#0891b2", len(cross_df), cross_rows)}
+            {_card("🌀 隔日沖/當沖雜訊", "#6b7280", len(wash_df), wash_rows)}
         </div>
     """
     return html
