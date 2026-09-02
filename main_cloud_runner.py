@@ -19,7 +19,7 @@ import glob
 import argparse
 from datetime import datetime
 
-from cloud_gdrive_downloader import download_recent_parquet_files, extract_date_from_filename
+from cloud_gdrive_downloader import download_recent_parquet_files, download_recent_close_price_files, extract_date_from_filename
 from cloud_report_generator import (
     run_heavy_accumulation_analysis,
     generate_multi_period_html_report,
@@ -47,9 +47,11 @@ def main():
 
     # 1. 取得 Parquet 資料檔案
     parquet_files = []
+    close_files_all = []
     if args.local_dir and os.path.exists(args.local_dir):
         print(f"[*] 使用指定本機目錄: {args.local_dir}")
         parquet_files = sorted(glob.glob(os.path.join(args.local_dir, "*.parquet")))
+        close_files_all = sorted(glob.glob(os.path.join(args.local_dir, "api_close1_*.parquet")))
     else:
         print(f"[*] 正在從 Google Drive 目標資料夾拉取近 {args.lookback_days} 日數據...")
         cache_dir = "./temp_cache_parquet"
@@ -57,26 +59,45 @@ def main():
             lookback_days=args.lookback_days,
             dest_dir=cache_dir
         )
+        print(f"[*] 正在從 Google Drive 拉取近 {args.lookback_days} 日每日收盤價數據...")
+        close_files_all = download_recent_close_price_files(
+            lookback_days=args.lookback_days,
+            dest_dir="./temp_cache_close"
+        )
 
     if not parquet_files:
         print("[!] 未取得任何有效 Parquet 檔案，程序終止。")
         sys.exit(1)
 
-    # 過濾出標準分點檔案 (排除 finmind 避免 schema mismatch)
-    absr1_files = [f for f in parquet_files if "finmind" not in os.path.basename(f).lower()]
+    # 過濾出標準分點檔案 (排除 finmind 與 close1 避免 schema mismatch)
+    absr1_files = [
+        f for f in parquet_files
+        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+    ]
     if not absr1_files:
         absr1_files = parquet_files
 
     # 依日期由舊到新排序
     absr1_files.sort(key=lambda x: extract_date_from_filename(os.path.basename(x)))
+    close_files_all.sort(key=lambda x: extract_date_from_filename(os.path.basename(x)))
     total_files = len(absr1_files)
     print(f"[✓] 共有 {total_files} 個交易日分點 Parquet 檔案就緒！")
+    if close_files_all:
+        print(f"[✓] 共有 {len(close_files_all)} 個交易日每日收盤價檔案就緒，將附加回測報酬率與分點集中度欄位。")
+    else:
+        print(f"[!] 未找到收盤價檔案 (api_close1_*.parquet)，將略過回測報酬率/集中度欄位。")
 
     # 2. 切分 4 個週期檔案清單
     files_5d = absr1_files[-5:] if total_files >= 5 else absr1_files
     files_10d = absr1_files[-10:] if total_files >= 10 else absr1_files
     files_20d = absr1_files[-20:] if total_files >= 20 else absr1_files
     files_60d = absr1_files[-60:] if total_files >= 60 else absr1_files
+
+    total_close = len(close_files_all)
+    close_5d = close_files_all[-5:] if total_close >= 5 else close_files_all
+    close_10d = close_files_all[-10:] if total_close >= 10 else close_files_all
+    close_20d = close_files_all[-20:] if total_close >= 20 else close_files_all
+    close_60d = close_files_all[-60:] if total_close >= 60 else close_files_all
 
     # 3. 執行四週期 DuckDB 重押模型運算
     print("[*] 正在計算 【近 5 日】 短線點火雷達...")
@@ -85,7 +106,8 @@ def main():
         min_net_amt_yi=0.2,          # 5 日門檻: 淨買超 >= 2,000 萬元
         min_buy_ratio_pct=70.0,
         min_net_vol_sheets=30.0,
-        min_trade_days=1
+        min_trade_days=1,
+        close_price_files=close_5d
     )
 
     print("[*] 正在計算 【近 10 日】 雙週波段追擊...")
@@ -94,7 +116,8 @@ def main():
         min_net_amt_yi=0.35,         # 10 日門檻: 淨買超 >= 3,500 萬元
         min_buy_ratio_pct=72.0,
         min_net_vol_sheets=50.0,
-        min_trade_days=2
+        min_trade_days=2,
+        close_price_files=close_10d
     )
 
     print("[*] 正在計算 【近 20 日】 黃金月波段認養 (⭐川湖模型)...")
@@ -103,7 +126,8 @@ def main():
         min_net_amt_yi=0.5,          # 20 日門檻: 淨買超 >= 5,000 萬元
         min_buy_ratio_pct=75.0,
         min_net_vol_sheets=80.0,
-        min_trade_days=3
+        min_trade_days=3,
+        close_price_files=close_20d
     )
 
     print("[*] 正在計算 【近 60 日】 季線超級大戶長波鎖碼...")
@@ -112,7 +136,8 @@ def main():
         min_net_amt_yi=1.0,          # 60 日門檻: 淨買超 >= 1.0 億元
         min_buy_ratio_pct=75.0,
         min_net_vol_sheets=150.0,
-        min_trade_days=8
+        min_trade_days=8,
+        close_price_files=close_60d
     )
 
     reports_dict = {

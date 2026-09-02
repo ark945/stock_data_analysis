@@ -34,10 +34,12 @@ def run_heavy_accumulation_analysis(
     ignition_threshold_ratio: float = 0.20,  # 主力點火確認門檻比例 (預設 20%)
     exclude_etf: bool = True,                # 是否過濾 ETF 標的 (預設 True，排除 00 開頭被動標的)
     sort_by: str = "score",                  # 排序方式: "score" (吸籌強度評分優先，推薦) 或 "amt" (金額優先)
-    top_n: int = 30
+    top_n: int = 30,
+    close_price_files: Optional[List[str]] = None  # 同期間每日收盤價 Parquet (api_close1_*)，提供則附加回測報酬率與分點集中度
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     透過 DuckDB 執行川湖+凱基三多重押模型分析 (含主力點火起算日、吃貨歷時與吸籌強度評分排序)
+    若提供 close_price_files，額外附加「點火後報酬率」(訊號回測驗證) 與「分點成交集中度」欄位
     回傳 (篩選結果 DataFrame, 統計數據概覽字典)
     """
     if not parquet_files:
@@ -187,6 +189,45 @@ def run_heavy_accumulation_analysis(
     df["股票標的"] = df.apply(lambda r: f"{r['symbol']} {r['stock_name']}".strip(), axis=1)
     df["主力分點"] = df.apply(lambda r: f"{r['broker_id']} {r['broker_name']}".strip(), axis=1)
 
+    # 附加回測報酬率 (點火日→最新收盤價之漲跌幅) 與分點成交集中度 (需提供同期收盤價檔案)
+    win_rate = None
+    avg_return_pct = None
+    if close_price_files:
+        close_files_norm = [f.replace("\\", "/") for f in close_price_files]
+        price_df = duckdb.query(f"""
+            SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close, volume
+            FROM read_parquet({close_files_norm})
+        """).to_df()
+
+        ignition_price = price_df.rename(columns={"trade_date": "ignition_date", "close": "ignition_close"})[["symbol", "ignition_date", "ignition_close"]]
+        latest_price = price_df.rename(columns={"trade_date": "last_date", "close": "latest_close"})[["symbol", "last_date", "latest_close"]]
+        df = df.merge(ignition_price, on=["symbol", "ignition_date"], how="left")
+        df = df.merge(latest_price, on=["symbol", "last_date"], how="left")
+        df["return_pct"] = np.where(
+            df["ignition_close"].notna() & df["latest_close"].notna() & (df["ignition_close"] > 0),
+            ((df["latest_close"] - df["ignition_close"]) / df["ignition_close"] * 100).round(2),
+            np.nan
+        )
+
+        period_vol = price_df.groupby("symbol")["volume"].sum().rename("period_total_vol").reset_index()
+        df = df.merge(period_vol, on="symbol", how="left")
+        df["concentration_pct"] = np.where(
+            df["period_total_vol"].notna() & (df["period_total_vol"] > 0),
+            (df["net_vol_sheets"] * 1000 / df["period_total_vol"] * 100).round(2),
+            np.nan
+        )
+        df.drop(columns=["period_total_vol"], inplace=True)
+
+        valid_return = df["return_pct"].dropna()
+        if not valid_return.empty:
+            win_rate = round((valid_return > 0).mean() * 100, 1)
+            avg_return_pct = round(valid_return.mean(), 2)
+    else:
+        df["ignition_close"] = np.nan
+        df["latest_close"] = np.nan
+        df["return_pct"] = np.nan
+        df["concentration_pct"] = np.nan
+
     # 摘要統計
     summary = {
         "scan_files_count": len(absr1_files),
@@ -197,16 +238,18 @@ def run_heavy_accumulation_analysis(
         "top_stock": df.iloc[0]["股票標的"] if not df.empty else "無",
         "top_broker": df.iloc[0]["主力分點"] if not df.empty else "無",
         "top_amt_yi": float(df.iloc[0]["net_amt_yi"]) if not df.empty else 0.0,
-        "total_heavy_amt_yi": round(df["net_amt_yi"].sum(), 2)
+        "total_heavy_amt_yi": round(df["net_amt_yi"].sum(), 2),
+        "backtest_win_rate": win_rate,
+        "backtest_avg_return_pct": avg_return_pct
     }
 
     return df, summary
 
 
 def generate_single_table_html(top_df: pd.DataFrame) -> str:
-    """生成單一週期的表格 HTML (含點火起算日、吃貨歷時與標籤)"""
+    """生成單一週期的表格 HTML (含點火起算日、吃貨歷時、標籤與回測報酬率/集中度)"""
     if top_df.empty:
-        return '<tr><td colspan="7" style="text-align:center; padding: 18px; color: #888;">此週期無符合重押門檻之標的</td></tr>'
+        return '<tr><td colspan="8" style="text-align:center; padding: 18px; color: #888;">此週期無符合重押門檻之標的</td></tr>'
 
     table_rows_html = ""
     for idx, row in top_df.reset_index(drop=True).iterrows():
@@ -265,9 +308,29 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
                     {row['score']} 分
                 </div>
             </td>
+            <td style="padding: 10px 8px; text-align: right; min-width: 100px; white-space: nowrap;">
+                {_format_return_badge(row.get('return_pct'))}
+                <div style="font-size: 10px; color: #9ca3af; margin-top: 2px;">集中度 {_format_concentration(row.get('concentration_pct'))}</div>
+            </td>
         </tr>
         """
     return table_rows_html
+
+
+def _format_return_badge(return_pct) -> str:
+    """將點火後報酬率格式化為紅漲綠跌徽章 (資料缺漏時顯示 N/A)"""
+    if return_pct is None or pd.isna(return_pct):
+        return '<span style="color:#9ca3af; font-size:12px;">N/A</span>'
+    color = "#dc2626" if return_pct >= 0 else "#16a34a"
+    sign = "+" if return_pct >= 0 else ""
+    return f'<span style="font-weight:bold; font-size:13px; color:{color};">{sign}{return_pct:.1f}%</span>'
+
+
+def _format_concentration(concentration_pct) -> str:
+    """將分點成交集中度格式化為百分比文字 (資料缺漏時顯示 N/A)"""
+    if concentration_pct is None or pd.isna(concentration_pct):
+        return "N/A"
+    return f"{concentration_pct:.1f}%"
 
 
 def generate_multi_period_html_report(
@@ -290,18 +353,26 @@ def generate_multi_period_html_report(
     for key, title, theme_color, desc in period_configs:
         sub_df = reports_dict.get(key, pd.DataFrame())
         data_period_str = ""
+        backtest_str = ""
         if not sub_df.empty and "first_date" in sub_df.columns and "last_date" in sub_df.columns:
             data_period_str = f" · 觀察區間: {sub_df['first_date'].min()} ~ {sub_df['last_date'].max()}"
+        if not sub_df.empty and "return_pct" in sub_df.columns and sub_df["return_pct"].notna().any():
+            valid_ret = sub_df["return_pct"].dropna()
+            win_rate = (valid_ret > 0).mean() * 100
+            avg_ret = valid_ret.mean()
+            backtest_str = f" · 📊回測勝率 {win_rate:.0f}% / 平均報酬 {avg_ret:+.1f}%"
         
         top_list_df = sub_df.head(top_display_n)
         rows_html = generate_single_table_html(top_list_df)
-        
+        backtest_html = f'<div style="font-size: 12px; color: #0f172a; margin-top: 2px; font-weight: 600;">{backtest_str}</div>' if backtest_str else ""
+
         sections_html += f"""
         <div style="margin-bottom: 28px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #ffffff;">
             <div style="background-color: #f8fafc; padding: 14px 18px; border-bottom: 2px solid {theme_color}; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
                 <div>
                     <div style="font-size: 15px; font-weight: 800; color: #0f172a;">{title}</div>
                     <div style="font-size: 12px; color: #64748b; margin-top: 2px;">{desc}{data_period_str}</div>
+                    {backtest_html}
                 </div>
             </div>
 
@@ -316,6 +387,7 @@ def generate_multi_period_html_report(
                             <th style="padding: 8px 10px; text-align: right; min-width: 110px; white-space: nowrap;">淨買張數 / 純度</th>
                             <th style="padding: 8px 10px; text-align: right; min-width: 95px; white-space: nowrap;">主力買均價</th>
                             <th style="padding: 8px; text-align: center; min-width: 70px; white-space: nowrap;">吸籌評分</th>
+                            <th style="padding: 8px 10px; text-align: right; min-width: 100px; white-space: nowrap;">點火後報酬率 / 集中度</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -411,7 +483,11 @@ def generate_multi_sheet_excel(reports_dict: Dict[str, pd.DataFrame], output_exc
         "sell_avg_price": "賣出均價(元)",
         "buy_amt_yi": "買進總額(億元)",
         "net_amt_yi": "淨買超金額(億元)",
-        "score": "主力吸籌強度評分"
+        "score": "主力吸籌強度評分",
+        "ignition_close": "點火日收盤價",
+        "latest_close": "最新收盤價",
+        "return_pct": "點火後報酬率(%)",
+        "concentration_pct": "分點成交集中度(%)"
     }
 
     with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
@@ -451,7 +527,11 @@ def generate_excel_report(df: pd.DataFrame, output_excel_path: str):
         "sell_avg_price": "賣出均價(元)",
         "buy_amt_yi": "買進總額(億元)",
         "net_amt_yi": "淨買超金額(億元)",
-        "score": "主力吸籌強度評分"
+        "score": "主力吸籌強度評分",
+        "ignition_close": "點火日收盤價",
+        "latest_close": "最新收盤價",
+        "return_pct": "點火後報酬率(%)",
+        "concentration_pct": "分點成交集中度(%)"
     }
 
     out_df = df[[c for c in export_cols.keys() if c in df.columns]].copy()

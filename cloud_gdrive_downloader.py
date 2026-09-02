@@ -100,9 +100,9 @@ def list_gdrive_parquet_files(service, folder_id: str) -> List[Dict[str, Any]]:
 
         files = results.get("files", [])
         for f in files:
-            # 排除非全市場或測試檔 (優先選擇 api_absr1)
+            # 排除非全市場或測試檔 (優先選擇 api_absr1，另支援 close1 收盤價檔)
             name = f.get("name", "")
-            if "absr1" in name or "finmind" in name or "stock" in name:
+            if "absr1" in name or "finmind" in name or "stock" in name or "close1" in name:
                 f_date = extract_date_from_filename(name)
                 all_files.append({
                     "id": f.get("id"),
@@ -184,6 +184,66 @@ def download_recent_parquet_files(
         print(f"[✓] 下載完成: {tf['name']}")
         downloaded_paths.append(local_path)
 
+    return downloaded_paths
+
+
+def download_recent_close_price_files(
+    folder_id: Optional[str] = None,
+    lookback_days: int = 60,
+    dest_dir: str = "./cloud_data_close"
+) -> List[str]:
+    """
+    下載 Google Drive 雲端中最近 N 個交易日的每日收盤價 Parquet 檔案 (api_close1_*)
+    獨立於 download_recent_parquet_files，避免共用同一份按日期去重清單而互相排擠
+    回傳本地下載後的檔案路徑列表
+    """
+    from googleapiclient.http import MediaIoBaseDownload
+
+    folder_id = folder_id or os.environ.get("GDRIVE_FOLDER_ID", "").strip()
+    if not folder_id:
+        print("[!] 未設定 GDRIVE_FOLDER_ID，無法下載雲端收盤價檔案。")
+        return []
+
+    service = get_gdrive_service()
+    if not service:
+        print("[!] 無法取得 Google Drive 服務認證，請確認 GDRIVE_SERVICE_ACCOUNT_KEY 設定。")
+        return []
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    all_files = list_gdrive_parquet_files(service, folder_id)
+    close_files = [f for f in all_files if "close1" in f["name"]]
+    if not close_files:
+        print("[!] Google Drive 資料夾內未找到 api_close1 收盤價檔案。")
+        return []
+
+    seen_dates = set()
+    target_files = []
+    for f in close_files:
+        if f["date"] not in seen_dates:
+            seen_dates.add(f["date"])
+            target_files.append(f)
+            if len(seen_dates) >= lookback_days:
+                break
+
+    downloaded_paths = []
+    print(f"[*] 準備下載最近 {len(target_files)} 個交易日收盤價數據...")
+
+    for tf in target_files:
+        local_path = os.path.join(dest_dir, tf["name"])
+        if os.path.exists(local_path) and os.path.getsize(local_path) == tf["size"] and tf["size"] > 0:
+            downloaded_paths.append(local_path)
+            continue
+
+        request = service.files().get_media(fileId=tf["id"])
+        with io.FileIO(local_path, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024 * 5)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+        downloaded_paths.append(local_path)
+
+    print(f"[✓] 收盤價檔案下載完成，共 {len(downloaded_paths)} 個檔案就緒。")
     return downloaded_paths
 
 
