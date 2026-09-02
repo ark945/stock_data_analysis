@@ -274,57 +274,60 @@ def generate_intelligence_html_section(
     sync_df: pd.DataFrame,
     profile_df: pd.DataFrame,
     cross_df: pd.DataFrame,
-    top_n: int = 5
+    top_n: int = 3
 ) -> str:
-    """生成「進階籌碼情報」摘要 HTML 區塊 (完整清單請見附件 Excel)"""
+    """生成「進階籌碼情報」精簡摘要 HTML 區塊 (單一卡片、每類僅前3筆，完整清單請見附件 Excel)"""
 
-    def _card(title: str, color: str, rows_html: str, note: str) -> str:
-        return f"""
-        <div style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #ffffff;">
-            <div style="background-color: #f8fafc; padding: 12px 16px; border-bottom: 2px solid {color};">
-                <div style="font-size: 14px; font-weight: 800; color: #0f172a;">{title}</div>
-                <div style="font-size: 11px; color: #64748b; margin-top: 2px;">{note}</div>
-            </div>
-            <div style="padding: 10px 16px;">{rows_html}</div>
-        </div>
-        """
-
-    def _list_html(items: List[str]) -> str:
+    def _sub_section(title: str, color: str, items: List[str]) -> str:
         if not items:
-            return '<div style="color:#9ca3af; font-size:12px; padding: 6px 0;">本期無符合條件之標的</div>'
-        return "".join(
-            f'<div style="font-size:12px; color:#374151; padding: 4px 0; border-bottom: 1px solid #f3f4f6;">{it}</div>'
-            for it in items
+            return ""
+        rows = "".join(
+            f'<div style="font-size:12px; color:#374151; padding: 3px 0;">・{it}</div>' for it in items
         )
+        return f"""
+            <div style="margin-top: 10px;">
+                <div style="font-size: 12.5px; font-weight: 700; color: {color};">{title}</div>
+                {rows}
+            </div>
+        """
 
     reversal_items = []
     if not reversal_df.empty:
         for _, r in reversal_df.head(top_n).iterrows():
             reversal_items.append(
-                f"<strong>{r['股票標的']}</strong> ({r['主力分點']}) 長期買超 +{r['net_amt_yi']:.2f}億 → 近期轉賣 {r['recent_net_amt_yi']:.2f}億"
+                f"<strong>{r['股票標的']}</strong> ({r['主力分點']}) +{r['net_amt_yi']:.1f}億→轉賣{r['recent_net_amt_yi']:.1f}億"
             )
 
     sync_items = []
     if not sync_df.empty:
         for _, r in sync_df.head(top_n).iterrows():
             sync_items.append(
-                f"<strong>{r['分點A']}</strong> ↔ <strong>{r['分點B']}</strong>：同步買超 {r['同步買超天數']} 天 / {r['同步標的檔數']} 檔標的 (同步比例 {r['同步比例(%)']:.0f}%)"
+                f"<strong>{r['分點A']}</strong> ↔ <strong>{r['分點B']}</strong>：同步 {r['同步買超天數']} 天/{r['同步標的檔數']} 檔 ({r['同步比例(%)']:.0f}%)"
             )
 
     cross_items = []
     if not cross_df.empty:
         for _, r in cross_df.head(top_n).iterrows():
-            cross_items.append(f"<strong>{r['主力分點']}</strong>：本期同時點火 {r['股票數']} 檔個股 ({r['標的清單'][:60]}{'...' if len(r['標的清單']) > 60 else ''})")
+            cross_items.append(f"<strong>{r['主力分點']}</strong>：同時點火 {r['股票數']} 檔 ({r['標的清單'][:40]}{'...' if len(r['標的清單']) > 40 else ''})")
 
-    wash_note = f"共掃出 {len(wash_df):,} 筆同日對敲雜訊紀錄 (完整清單見附件 Excel「隔日沖雜訊」工作表)" if not wash_df.empty else "本期無明顯同日對敲雜訊"
+    sections = "".join([
+        _sub_section("⚠️ 主力翻臉出貨預警", "#dc2626", reversal_items),
+        _sub_section("🔗 集團同步進出", "#7c3aed", sync_items),
+        _sub_section("🎯 跨股同步布局", "#0891b2", cross_items),
+    ])
+
+    if not sections:
+        sections = '<div style="font-size:12px; color:#9ca3af; padding: 6px 0;">本期無符合條件之進階情報項目</div>'
+
+    wash_note = f"另掃出 {len(wash_df):,} 筆同日對敲雜訊、{len(profile_df):,} 筆分點側寫，完整清單請見附件 Excel。" if not wash_df.empty else "完整清單請見附件 Excel。"
 
     html = f"""
-        <div style="padding: 4px 20px 10px 20px;">
-            <div style="font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 10px;">🕵️ 進階籌碼情報摘要</div>
-            {_card("⚠️ 主力翻臉出貨預警", "#dc2626", _list_html(reversal_items), "長期重押分點最近轉為淨賣出，慎防主力落跑")}
-            {_card("🔗 集團同步進出偵測", "#7c3aed", _list_html(sync_items), "不同分點同步買超同一標的比例異常之組合，僅供參考不代表違法炒作")}
-            {_card("🎯 跨股同步布局偵測", "#0891b2", _list_html(cross_items), "平常操作集中的分點本期同時點火多檔個股，留意題材輪動")}
-            {_card("🌀 隔日沖/當沖雜訊提示", "#6b7280", f'<div style="font-size:12px; color:#374151; padding: 4px 0;">{wash_note}</div>', "同日大量對敲買賣之雜訊分點，建議排除以淨化主力雷達訊號")}
+        <div style="padding: 4px 20px 14px 20px;">
+            <div style="border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff; padding: 12px 16px;">
+                <div style="font-size: 14px; font-weight: 800; color: #0f172a;">🕵️ 進階籌碼情報摘要 (各項僅列前 {top_n} 筆)</div>
+                {sections}
+                <div style="font-size: 11px; color: #9ca3af; margin-top: 10px;">{wash_note}</div>
+            </div>
         </div>
     """
     return html

@@ -340,7 +340,7 @@ def generate_multi_period_html_report(
     top_display_n: int = 15,
     extra_sections_html: str = ""
 ) -> str:
-    """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (TOP 15 精選)"""
+    """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (預設精選 TOP N，以控制郵件長度)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     sections_html = ""

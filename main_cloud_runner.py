@@ -176,14 +176,14 @@ def main():
     print(f"    - 集團同步進出: {len(sync_df):,} 組")
     print(f"    - 跨股同步布局: {len(cross_df):,} 組")
 
-    # 4. 生成四週期 HTML 郵件內容 (TOP 15 精選)
+    # 4. 生成四週期 HTML 郵件內容 (每週期僅 TOP 8，控制郵件長度提高可讀性)
     report_title = f"台股主力四週期連續重押吸籌雷達日報"
     intelligence_html = generate_intelligence_html_section(reversal_df, wash_df, sync_df, profile_df, cross_df)
     html_content = generate_multi_period_html_report(
         reports_dict=reports_dict,
         latest_date=latest_date,
         report_title=report_title,
-        top_display_n=15,
+        top_display_n=8,
         extra_sections_html=intelligence_html
     )
 
