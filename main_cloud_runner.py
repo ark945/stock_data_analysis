@@ -226,6 +226,26 @@ def main():
         f.write(html_content)
     print(f"[✓] 本地 HTML 報表已儲存至: {html_backup_path}")
 
+    # 5.5 同步至 myStock 雲端戰情室 (若配置 SUPABASE_URL 與 SUPABASE_KEY)
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    has_synced_mystock = False
+    if supabase_url and supabase_key:
+        print("[*] 偵測到 Supabase 設定，正在將最新籌碼戰情同步至 myStock 雲端戰情室...")
+        try:
+            from sync_to_mystock import prepare_chip_payloads, upsert_to_supabase
+            target_data_dir = args.local_dir if args.local_dir and os.path.exists(args.local_dir) else "./temp_cache_parquet"
+            payload = prepare_chip_payloads(target_data_dir, latest_date)
+            upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")
+            upsert_to_supabase(supabase_url, supabase_key, "chip_accumulation_signals", payload["chip_accumulation_signals"], on_conflict="trade_date,period_days,symbol,broker_name")
+            upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
+            upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
+            upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
+            has_synced_mystock = True
+            print("[✓] 成功同步最新主力情報至 myStock 雲端戰情室！")
+        except Exception as e:
+            print(f"[!] myStock 同步過程發生非致命異常: {e}")
+
     # 6. 發送 Email 與 Telegram 推播
     if args.no_email:
         print("[*] 依參數設定 (--no-email)，跳過郵件寄送。")
@@ -242,6 +262,8 @@ def main():
         top_20d_broker = sum_20d.get("top_broker", "")
         top_20d_amt = sum_20d.get("top_amt_yi", 0.0)
 
+        mystock_link = "\n👉 [點此在手機開啟 myStock 戰情室](https://ark945-mystock.hf.space)" if has_synced_mystock else ""
+
         tg_msg = (
             f"🚀 *{report_title} ({latest_date})*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -252,6 +274,7 @@ def main():
             f"💎 *近 60 日季線大戶鎖碼*：`{len(df_60d)} 檔`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"📧 完整四週期 HTML 郵件與 4-Sheet Excel 已寄達信箱！"
+            f"{mystock_link}"
         )
         send_telegram_notify(tg_msg)
 

@@ -7,6 +7,7 @@ output/*.parquet
 output/*.csv
 output/*.xlsx
 output/*.html
+output/*.json
 .env
 daily_reports/
 cloud_data/
