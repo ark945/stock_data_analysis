@@ -280,6 +280,7 @@ def main():
     parser.add_argument("--symbol", type=str, default=None, help="指定查詢特定股票 (例: 2890)")
     parser.add_argument("--broker", type=str, default=None, help="指定查詢特定券商分點 (例: 8440)")
     parser.add_argument("--date", type=str, default=None, help="指定分析基準交易日 (YYYY-MM-DD，若未指定則取最新)")
+    parser.add_argument("--include-etf", action="store_true", help="包含 ETF 標的 (預設已排除 00 開頭 ETF)")
     parser.add_argument("--top", type=int, default=30, help="輸出前幾大名單 (預設 30)")
     parser.add_argument("--output", type=str, default=None, help="輸出報告路徑 (.xlsx 或 .csv)")
     parser.add_argument("--email", action="store_true", help="掃描完成後直接以 Email 寄送報告 (讀取 .env 之 SMTP 設定)")
