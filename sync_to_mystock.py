@@ -87,6 +87,18 @@ def clean_nan_and_inf(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return cleaned
 
 
+def deduplicate_records(records: List[Dict[str, Any]], key_cols: List[str]) -> List[Dict[str, Any]]:
+    """依據指定欄位組合去除重複資料，避免 Postgres 21000 錯誤"""
+    seen = set()
+    deduped = []
+    for r in records:
+        key = tuple(str(r.get(col, "")) for col in key_cols)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return deduped
+
+
 def upsert_to_supabase(
     supabase_url: str,
     supabase_key: str,
@@ -98,6 +110,11 @@ def upsert_to_supabase(
     if not records:
         print(f"[*] 表 {table_name}: 無資料需同步。")
         return True
+
+    # 批次內去重，防止 Postgres 報錯 "ON CONFLICT DO UPDATE command cannot affect row a second time"
+    if on_conflict:
+        key_cols = [c.strip() for c in on_conflict.split(",") if c.strip()]
+        records = deduplicate_records(records, key_cols)
 
     endpoint = f"{supabase_url.rstrip('/')}/rest/v1/{table_name}"
     if on_conflict:
