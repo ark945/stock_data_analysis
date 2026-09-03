@@ -247,6 +247,63 @@ def download_recent_close_price_files(
     return downloaded_paths
 
 
+def download_recent_files_by_pattern(
+    pattern: str,
+    folder_id: Optional[str] = None,
+    lookback_days: int = 60,
+    dest_dir: str = "./cloud_data_custom"
+) -> List[str]:
+    """
+    下載 Google Drive 雲端中符合指定 pattern (如 'margin', 'taifex', 'tdcc') 最近 N 個交易日的 Parquet 檔案
+    """
+    from googleapiclient.http import MediaIoBaseDownload
+
+    folder_id = folder_id or os.environ.get("GDRIVE_FOLDER_ID", "").strip()
+    if not folder_id:
+        return []
+
+    service = get_gdrive_service()
+    if not service:
+        return []
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    all_files = list_gdrive_parquet_files(service, folder_id)
+    matched_files = [f for f in all_files if pattern.lower() in f["name"].lower()]
+    if not matched_files:
+        return []
+
+    seen_dates = set()
+    target_files = []
+    for f in matched_files:
+        if f["date"] not in seen_dates:
+            seen_dates.add(f["date"])
+            target_files.append(f)
+            if len(seen_dates) >= lookback_days:
+                break
+
+    downloaded_paths = []
+    for tf in target_files:
+        local_path = os.path.join(dest_dir, tf["name"])
+        if os.path.exists(local_path) and os.path.getsize(local_path) == tf["size"] and tf["size"] > 0:
+            downloaded_paths.append(local_path)
+            continue
+
+        try:
+            request = service.files().get_media(fileId=tf["id"])
+            with io.FileIO(local_path, "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024 * 5)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+            downloaded_paths.append(local_path)
+        except Exception as e:
+            print(f"[!] 下載 {tf['name']} 失敗: {e}")
+
+    print(f"[✓] {pattern} 檔案下載完成，共 {len(downloaded_paths)} 個檔案就緒。")
+    return downloaded_paths
+
+
 if __name__ == "__main__":
     test_days = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     paths = download_recent_parquet_files(lookback_days=test_days)

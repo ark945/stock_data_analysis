@@ -11,3 +11,8 @@ output/*.json
 .env
 daily_reports/
 cloud_data/
+cloud_data_*/
+output_margin/
+output_taifex/
+output_tdcc/
+temp_cache_*/

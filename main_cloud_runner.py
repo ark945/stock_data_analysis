@@ -77,6 +77,13 @@ def main():
             lookback_days=args.lookback_days,
             dest_dir="./temp_cache_close"
         )
+        print(f"[*] 正在從 Google Drive 拉取近 {args.lookback_days} 日融資融券數據...")
+        from cloud_gdrive_downloader import download_recent_files_by_pattern
+        download_recent_files_by_pattern("margin", lookback_days=args.lookback_days, dest_dir="./output_margin")
+        print(f"[*] 正在從 Google Drive 拉取近 {args.lookback_days} 日期交所期貨數據...")
+        download_recent_files_by_pattern("taifex", lookback_days=args.lookback_days, dest_dir="./output_taifex")
+        print(f"[*] 正在從 Google Drive 拉取近 {args.lookback_days} 日集保股權分散數據...")
+        download_recent_files_by_pattern("tdcc", lookback_days=args.lookback_days, dest_dir="./output_tdcc")
 
     if not parquet_files:
         print("[!] 未取得任何有效 Parquet 檔案，程序終止。")
@@ -228,6 +235,51 @@ def main():
     append_intelligence_sheets_to_excel(excel_path, reversal_df, wash_df, sync_df, profile_df, cross_df, divergence_df=divergence_df)
     if not tail_vwap_df.empty:
         append_tail_vwap_sheet_to_excel(excel_path, tail_vwap_df)
+
+    # 5.3 運算籌碼衍生指標 (買賣家數差 / 資券軋空 / 散戶接刀坑 / 大盤期權) 並加入第 4 道自愈兜底
+    try:
+        from chip_derivatives_engine import run_derivatives_analysis_for_date
+        # 第 4 道防線：自愈兜底檢測 (若當日融資券或期貨未自 Google Drive 取得，本地秒級補抓)
+        margin_file = f"./output_margin/api_margin_{latest_date}_{latest_date}.parquet"
+        if not os.path.exists(margin_file):
+            try:
+                print(f"[*] 觸發第 4 道自愈兜底：本地即刻補抓 {latest_date} 融資券...")
+                sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stock_data_downloader"))
+                from margin_trading_crawler import download_margin_for_date
+                download_margin_for_date(latest_date, output_dir="./output_margin")
+            except Exception as _e:
+                print(f"[!] 自愈補抓融資券提示: {_e}")
+
+        taifex_file = f"./output_taifex/api_taifex_{latest_date}_{latest_date}.parquet"
+        if not os.path.exists(taifex_file):
+            try:
+                print(f"[*] 觸發第 4 道自愈兜底：本地即刻補抓 {latest_date} 期交所期權...")
+                sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stock_data_downloader"))
+                from taifex_futures_crawler import download_taifex_futures_for_date
+                download_taifex_futures_for_date(latest_date, output_dir="./output_taifex")
+            except Exception as _e:
+                print(f"[!] 自愈補抓期貨提示: {_e}")
+
+        print(f"[*] 正在運算最新交易日 ({latest_date}) 籌碼衍生指標 (買賣家數差/軋空/接刀)...")
+        target_broker_dir = args.local_dir if (args.local_dir and os.path.exists(args.local_dir)) else "./temp_cache_parquet"
+        deriv_res = run_derivatives_analysis_for_date(
+            trade_date=latest_date,
+            broker_dir=target_broker_dir,
+            output_dir=args.output_dir
+        )
+        if deriv_res:
+            with pd.ExcelWriter(excel_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+                if not deriv_res.get("concentrated", pd.DataFrame()).empty:
+                    deriv_res["concentrated"].to_excel(writer, sheet_name="籌碼極度集中(家數差)", index=False)
+                if not deriv_res.get("squeeze", pd.DataFrame()).empty:
+                    deriv_res["squeeze"].to_excel(writer, sheet_name="極品軋空候選", index=False)
+                if not deriv_res.get("trap", pd.DataFrame()).empty:
+                    deriv_res["trap"].to_excel(writer, sheet_name="散戶接刀套牢坑", index=False)
+                if not deriv_res.get("macro", pd.DataFrame()).empty:
+                    deriv_res["macro"].to_excel(writer, sheet_name="大盤微觀期權避震", index=False)
+            print(f"[✓] 成功將籌碼衍生情報 (家數差/軋空/期權) 工作表追加至 Excel: {excel_path}")
+    except Exception as e:
+        print(f"[!] 籌碼衍生指標運算或追加異常 (跳過): {e}")
 
     # 儲存本機 HTML 備份
     html_backup_path = os.path.join(args.output_dir, f"multi_period_report_{latest_date}.html")
