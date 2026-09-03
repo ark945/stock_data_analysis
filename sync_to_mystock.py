@@ -53,7 +53,7 @@ def find_local_files(data_dir: str):
             close_files_all.extend(glob.glob(os.path.join(d, "api_close1_*.parquet")))
     absr1_files = [
         f for f in parquet_files 
-        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+        if "api_absr1_" in os.path.basename(f).lower()
     ]
     absr1_files = sorted(list(set(absr1_files)), key=lambda x: extract_date_from_filename(os.path.basename(x)))
     close_files_all = sorted(list(set(close_files_all)), key=lambda x: extract_date_from_filename(os.path.basename(x)))
@@ -166,6 +166,29 @@ def prepare_chip_payloads(
 
     print("=" * 65)
     print(f"[*] 正在從量化核心提取全市場籌碼情報 (基準交易日: {actual_date})")
+    
+    # 預加載融資券與集保大戶資料以附加指標
+    margin_file = os.path.join(data_dir, f"api_margin_{actual_date}_{actual_date}.parquet")
+    if not os.path.exists(margin_file):
+        margin_file = os.path.join(os.path.dirname(__file__), "output_margin", f"api_margin_{actual_date}_{actual_date}.parquet")
+    margin_map = {}
+    if os.path.exists(margin_file):
+        try:
+            mdf = pd.read_parquet(margin_file)
+            for _, mr in mdf.iterrows():
+                margin_map[str(mr["symbol"])] = float(mr.get("short_margin_ratio_pct", 0) or 0)
+        except Exception as _e:
+            pass
+
+    tdcc_files = sorted(glob.glob(os.path.join(data_dir, "api_tdcc_*.parquet")))
+    tdcc_map = {}
+    if tdcc_files:
+        try:
+            tdf = pd.read_parquet(tdcc_files[-1])
+            for _, tr in tdf.iterrows():
+                tdcc_map[str(tr["symbol"])] = float(tr.get("large_shareholder_pct", 0) or 0)
+        except Exception as _e:
+            pass
     print(f"[*] 可用歷史窗口: {len(absr1_files)} 個交易日 (起: {extract_date_from_filename(os.path.basename(absr1_files[0]))} ~ 訖: {actual_date})")
     print("=" * 65)
 
@@ -221,7 +244,9 @@ def prepare_chip_payloads(
                     "backtest_win_rate": float(r.get("backtest_win_rate", 0)) if pd.notna(r.get("backtest_win_rate")) else None,
                     "backtest_avg_return_pct": float(r.get("backtest_avg_return_pct", 0)) if pd.notna(r.get("backtest_avg_return_pct")) else None,
                     "persona_tag": "💎 波段主力" if p >= 20 else "⚡ 短線主力",
-                    "action_guide": "主力重押鎖碼，順勢跟隨" if p >= 20 else "短線點火爆量，注意開高震盪"
+                    "action_guide": "主力重押鎖碼，順勢跟隨" if p >= 20 else "短線點火爆量，注意開高震盪",
+                    "short_margin_ratio_pct": margin_map.get(str(r.get("symbol", "")), None),
+                    "large_shareholder_pct": tdcc_map.get(str(r.get("symbol", "")), None)
                 })
 
     # 2. 主力出貨逃離下車表
@@ -332,9 +357,90 @@ def prepare_chip_payloads(
                 "action_guide": str(r.get("次日作戰指引", ""))
             })
 
-    # 5. 大盤多空司令速覽
+    # 5. 大盤多空司令與期權避震
     bull_champion = df_market_kings[df_market_kings["多空陣營"].str.contains("多頭")].iloc[0] if not df_market_kings.empty else None
     bear_champion = df_market_kings[df_market_kings["多空陣營"].str.contains("空頭")].iloc[0] if not df_market_kings.empty else None
+
+    taifex_file = os.path.join(data_dir, f"api_taifex_{actual_date}_{actual_date}.parquet")
+    if not os.path.exists(taifex_file):
+        taifex_file = os.path.join(os.path.dirname(__file__), "output_taifex", f"api_taifex_{actual_date}_{actual_date}.parquet")
+    foreign_tx_oi = None
+    retail_mtx_ratio_pct = None
+    macro_sentiment = "中性整理"
+    if os.path.exists(taifex_file):
+        try:
+            tx_df = pd.read_parquet(taifex_file)
+            if not tx_df.empty:
+                r_tx = tx_df.iloc[0]
+                foreign_tx_oi = float(r_tx.get("foreign_tx_oi", 0)) if pd.notna(r_tx.get("foreign_tx_oi")) else None
+                retail_mtx_ratio_pct = float(r_tx.get("retail_mtx_ratio_pct", 0)) if pd.notna(r_tx.get("retail_mtx_ratio_pct")) else None
+                macro_sentiment = str(r_tx.get("macro_sentiment", "中性整理"))
+        except Exception:
+            pass
+
+    # 6. 運算衍生指標 (軋空 / 接刀 / 家數差集中)
+    print("[5/5] 運算籌碼衍生指標 (軋空/接刀/集中度)...")
+    deriv_rows = []
+    try:
+        from chip_derivatives_engine import run_derivatives_analysis_for_date
+        d_res = run_derivatives_analysis_for_date(actual_date, broker_dir=data_dir, output_dir="./output")
+        if d_res:
+            if not d_res.get("squeeze", pd.DataFrame()).empty:
+                for _, sr in d_res["squeeze"].head(20).iterrows():
+                    deriv_rows.append({
+                        "trade_date": actual_date,
+                        "signal_type": "squeeze",
+                        "symbol": str(sr.get("symbol", "")),
+                        "stock_name": str(sr.get("name", "")),
+                        "market": str(sr.get("market", "上市")),
+                        "close_price": float(sr.get("close", 0)) if pd.notna(sr.get("close")) else None,
+                        "short_margin_ratio_pct": float(sr.get("short_margin_ratio_pct", 0)) if pd.notna(sr.get("short_margin_ratio_pct")) else None,
+                        "margin_net": float(sr.get("margin_net", 0)) if pd.notna(sr.get("margin_net")) else None,
+                        "short_net": float(sr.get("short_net", 0)) if pd.notna(sr.get("short_net")) else None,
+                        "diff_broker_count": float(sr.get("diff_broker_count", 0)) if pd.notna(sr.get("diff_broker_count")) else None,
+                        "large_shareholder_pct": float(sr.get("large_shareholder_pct", 0)) if pd.notna(sr.get("large_shareholder_pct")) else None,
+                        "retail_shareholder_pct": float(sr.get("retail_shareholder_pct", 0)) if pd.notna(sr.get("retail_shareholder_pct")) else None,
+                        "persona_tag": "🚀 極品軋空",
+                        "action_guide": "高券資比+融券暴增+家數差集中，空頭回補爆發力強"
+                    })
+            if not d_res.get("trap", pd.DataFrame()).empty:
+                for _, tr in d_res["trap"].head(20).iterrows():
+                    deriv_rows.append({
+                        "trade_date": actual_date,
+                        "signal_type": "trap",
+                        "symbol": str(tr.get("symbol", "")),
+                        "stock_name": str(tr.get("name", "")),
+                        "market": str(tr.get("market", "上市")),
+                        "close_price": float(tr.get("close", 0)) if pd.notna(tr.get("close")) else None,
+                        "short_margin_ratio_pct": float(tr.get("short_margin_ratio_pct", 0)) if pd.notna(tr.get("short_margin_ratio_pct")) else None,
+                        "margin_net": float(tr.get("margin_net", 0)) if pd.notna(tr.get("margin_net")) else None,
+                        "short_net": float(tr.get("short_net", 0)) if pd.notna(tr.get("short_net")) else None,
+                        "diff_broker_count": float(tr.get("diff_broker_count", 0)) if pd.notna(tr.get("diff_broker_count")) else None,
+                        "large_shareholder_pct": float(tr.get("large_shareholder_pct", 0)) if pd.notna(tr.get("large_shareholder_pct")) else None,
+                        "retail_shareholder_pct": float(tr.get("retail_shareholder_pct", 0)) if pd.notna(tr.get("retail_shareholder_pct")) else None,
+                        "persona_tag": "⚠️ 散戶接刀",
+                        "action_guide": "融資暴增+主力倒貨+家數差擴大，散戶接刀套牢風險極高"
+                    })
+            if not d_res.get("concentrated", pd.DataFrame()).empty:
+                for _, cr in d_res["concentrated"].head(20).iterrows():
+                    deriv_rows.append({
+                        "trade_date": actual_date,
+                        "signal_type": "concentrated",
+                        "symbol": str(cr.get("symbol", "")),
+                        "stock_name": str(cr.get("name", "")),
+                        "market": str(cr.get("market", "上市")),
+                        "close_price": float(cr.get("close", 0)) if pd.notna(cr.get("close")) else None,
+                        "short_margin_ratio_pct": float(cr.get("short_margin_ratio_pct", 0)) if pd.notna(cr.get("short_margin_ratio_pct")) else None,
+                        "margin_net": float(cr.get("margin_net", 0)) if pd.notna(cr.get("margin_net")) else None,
+                        "short_net": float(cr.get("short_net", 0)) if pd.notna(cr.get("short_net")) else None,
+                        "diff_broker_count": float(cr.get("diff_broker_count", 0)) if pd.notna(cr.get("diff_broker_count")) else None,
+                        "large_shareholder_pct": float(cr.get("large_shareholder_pct", 0)) if pd.notna(cr.get("large_shareholder_pct")) else None,
+                        "retail_shareholder_pct": float(cr.get("retail_shareholder_pct", 0)) if pd.notna(cr.get("retail_shareholder_pct")) else None,
+                        "persona_tag": "💎 籌碼極度集中",
+                        "action_guide": "買賣家數差大幅負值，少數主力分點積極收納籌碼"
+                    })
+    except Exception as _de:
+        print(f"[!] 衍生指標運算提示: {_de}")
 
     summary_row = [{
         "trade_date": actual_date,
@@ -345,7 +451,10 @@ def prepare_chip_payloads(
         "bear_champion_amt": float(bear_champion["net_amt_yi"]) if bear_champion is not None else 0,
         "bear_champion_stocks": str(bear_champion["核心標的"]) if bear_champion is not None else "",
         "market_sentiment": "偏多震盪" if (bull_champion is not None and bull_champion["net_amt_yi"] > 30) else "中性整理",
-        "total_signals_count": len(accum_rows) + len(exit_rows) + len(inst_rows) + len(vwap_rows)
+        "foreign_tx_oi": foreign_tx_oi,
+        "retail_mtx_ratio_pct": retail_mtx_ratio_pct,
+        "macro_sentiment": macro_sentiment,
+        "total_signals_count": len(accum_rows) + len(exit_rows) + len(inst_rows) + len(vwap_rows) + len(deriv_rows)
     }]
 
     payload = {
@@ -354,7 +463,8 @@ def prepare_chip_payloads(
         "chip_accumulation_signals": clean_nan_and_inf(accum_rows),
         "chip_exit_signals": clean_nan_and_inf(exit_rows),
         "broker_institution_ranks": clean_nan_and_inf(inst_rows),
-        "vwap_attribution_signals": clean_nan_and_inf(vwap_rows)
+        "vwap_attribution_signals": clean_nan_and_inf(vwap_rows),
+        "chip_derivatives_signals": clean_nan_and_inf(deriv_rows)
     }
 
     return payload
@@ -368,7 +478,8 @@ def purge_date_from_supabase(supabase_url: str, supabase_key: str, target_date: 
         "chip_accumulation_signals",
         "chip_exit_signals",
         "broker_institution_ranks",
-        "vwap_attribution_signals"
+        "vwap_attribution_signals",
+        "chip_derivatives_signals"
     ]
     headers = {
         "apikey": supabase_key,
@@ -413,6 +524,8 @@ def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase
     success &= upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
     success &= upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
     success &= upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
+    if payload.get("chip_derivatives_signals"):
+        success &= upsert_to_supabase(supabase_url, supabase_key, "chip_derivatives_signals", payload["chip_derivatives_signals"], on_conflict="trade_date,signal_type,symbol")
 
     return success
 

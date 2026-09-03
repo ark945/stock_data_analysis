@@ -81,7 +81,7 @@ def _list_absr1_files(data_dir: str):
     raw_files = sorted(glob.glob(os.path.join(data_dir, "*.parquet")))
     return [
         f.replace("\\", "/") for f in raw_files
-        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+        if "api_absr1_" in os.path.basename(f).lower()
     ]
 
 

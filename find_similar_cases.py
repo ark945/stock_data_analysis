@@ -139,7 +139,7 @@ def scan_heavy_accumulation(
 
     absr1_files = [
         f.replace("\\", "/") for f in raw_files
-        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+        if "api_absr1_" in os.path.basename(f).lower()
     ]
     files = absr1_files if absr1_files else [f.replace("\\", "/") for f in raw_files]
     print(f"==================================================")
