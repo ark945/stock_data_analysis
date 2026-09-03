@@ -159,8 +159,13 @@ def prepare_chip_payloads(
     latest_file = absr1_files[-1]
     actual_date = target_date or extract_date_from_filename(os.path.basename(latest_file))
 
+    # 若指定日期，截斷檔案至指定交易日為止
+    absr1_files = [f for f in absr1_files if extract_date_from_filename(os.path.basename(f)) <= actual_date]
+    close_files_all = [f for f in close_files_all if extract_date_from_filename(os.path.basename(f)) <= actual_date]
+
     print("=" * 65)
     print(f"[*] 正在從量化核心提取全市場籌碼情報 (基準交易日: {actual_date})")
+    print(f"[*] 可用歷史窗口: {len(absr1_files)} 個交易日 (起: {extract_date_from_filename(os.path.basename(absr1_files[0]))} ~ 訖: {actual_date})")
     print("=" * 65)
 
     # 切分 4 個週期檔案清單
@@ -228,7 +233,8 @@ def prepare_chip_payloads(
         recent_days=5,
         min_long_net_amt_yi=0.3,
         min_recent_sell_amt_yi=0.2,
-        top_n=30
+        top_n=30,
+        target_date=actual_date
     )
     exit_rows = []
     if not df_exit.empty:
@@ -289,7 +295,7 @@ def prepare_chip_payloads(
                 "feature_tag": str(r.get("法人標籤", "本土法人"))
             })
 
-    # 4. 尾盤放量站上 VWAP 歸因
+    # 4. 執行尾盤放量 VWAP 歸因
     print("[4/4] 運算尾盤放量站上 VWAP 與主力分點逆向歸因...")
     df_vwap = scan_tail_vwap_and_attribute(
         data_dir=data_dir,
@@ -301,18 +307,18 @@ def prepare_chip_payloads(
             vwap_rows.append({
                 "trade_date": actual_date,
                 "symbol": str(r.get("symbol", "")),
-                "stock_name": str(r.get("stock_name", "")),
-                "market": str(r.get("market", "上市")),
+                "stock_name": str(r.get("股票名稱", "")),
+                "market": str(r.get("市場別", "上市")),
                 "close_price": float(r.get("close", 0)),
                 "vwap_price": float(r.get("vwap", 0)),
                 "vwap_premium_pct": float(r.get("vwap_premium_pct", 0)),
-                "broker_name": str(r.get("tail_broker_name", "")),
-                "broker_buy_avg": float(r.get("broker_buy_avg", 0)),
-                "net_amt_yi": float(r.get("net_amt_yi", 0)),
-                "net_vol_sheets": float(r.get("net_vol_sheets", 0)),
+                "broker_name": str(r.get("券商分點", "")),
+                "broker_buy_avg": float(r.get("buy_avg_price", 0)),
+                "net_amt_yi": float(r.get("broker_net_amt_yi", 0)),
+                "net_vol_sheets": float(r.get("broker_net_vol_sheets", 0)),
                 "buy_purity_pct": float(r.get("buy_purity_pct", 0)),
-                "persona_tag": str(r.get("persona_tag", "尾盤主力")),
-                "action_guide": str(r.get("action_guide", ""))
+                "persona_tag": str(r.get("主力屬性", "尾盤主力")),
+                "action_guide": str(r.get("次日作戰指引", ""))
             })
 
     # 5. 大盤多空司令速覽
@@ -343,10 +349,37 @@ def prepare_chip_payloads(
     return payload
 
 
+def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase_key: str, dry_run: bool = False) -> bool:
+    """同步單一交易日"""
+    payload = prepare_chip_payloads(data_dir, target_date)
+    actual_date = payload["trade_date"]
+
+    print(f"📊 【{actual_date}】吸籌: {len(payload['chip_accumulation_signals'])} | 出貨: {len(payload['chip_exit_signals'])} | 法人: {len(payload['broker_institution_ranks'])} | VWAP: {len(payload['vwap_attribution_signals'])}")
+
+    out_file = os.path.join(os.path.dirname(__file__), "output", f"mystock_payload_{actual_date}.json")
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    if dry_run or not (supabase_url and supabase_key):
+        return True
+
+    success = True
+    success &= upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")
+    success &= upsert_to_supabase(supabase_url, supabase_key, "chip_accumulation_signals", payload["chip_accumulation_signals"], on_conflict="trade_date,period_days,symbol,broker_name")
+    success &= upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
+    success &= upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
+    success &= upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
+
+    return success
+
+
 def main():
     parser = argparse.ArgumentParser(description="myStock 雲端籌碼戰情室資料同步模組")
     parser.add_argument("--data-dir", default=r"d:\MyProject\stock_data_analysis\20260822分點資料", help="資料目錄")
-    parser.add_argument("--date", default=None, help="指定交易日 (YYYY-MM-DD)")
+    parser.add_argument("--date", default=None, help="指定單一交易日 (YYYY-MM-DD)")
+    parser.add_argument("--start-date", default=None, help="批次同步起始日 (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default=None, help="批次同步結束日 (YYYY-MM-DD)")
     parser.add_argument("--dry-run", action="store_true", help="演練模式 (產製並檢驗 JSON Payload，不寫入資料庫)")
     parser.add_argument("--supabase-url", default=None, help="Supabase 專案 URL")
     parser.add_argument("--supabase-key", default=None, help="Supabase API 金鑰 (Service Role 或 Anon)")
@@ -356,54 +389,52 @@ def main():
     supabase_url = args.supabase_url or os.getenv("SUPABASE_URL")
     supabase_key = args.supabase_key or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-    payload = prepare_chip_payloads(args.data_dir, args.date)
-    actual_date = payload["trade_date"]
+    # 批次同步模式
+    if args.start_date:
+        absr1_files, _ = find_local_files(args.data_dir)
+        all_dates = sorted(list(set(extract_date_from_filename(os.path.basename(f)) for f in absr1_files)))
+        target_dates = [d for d in all_dates if d >= args.start_date and (not args.end_date or d <= args.end_date)]
 
-    print("\n" + "=" * 65)
-    print(f"📊 【myStock 戰情室 Payload 統計 - {actual_date}】")
-    print("-" * 65)
-    print(f"• 大盤多空速覽: 1 筆")
-    print(f"• 主力四週期吸籌訊號 (5/10/20/60日): {len(payload['chip_accumulation_signals'])} 筆")
-    print(f"• 主力出貨下車避坑訊號: {len(payload['chip_exit_signals'])} 筆")
-    print(f"• 外資席位與本土法人重押: {len(payload['broker_institution_ranks'])} 筆")
-    print(f"• 尾盤放量 VWAP 歸因: {len(payload['vwap_attribution_signals'])} 筆")
-    print("=" * 65)
+        print("\n" + "=" * 65)
+        print(f"🚀 啟動歷史批次同步模式：共有 {len(target_dates)} 個交易日 ({target_dates[0]} ~ {target_dates[-1]})")
+        print("=" * 65)
 
-    out_file = os.path.join(os.path.dirname(__file__), "output", f"mystock_payload_{actual_date}.json")
-    os.makedirs(os.path.dirname(out_file), exist_ok=True)
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(f"[✓] 本地快照已儲存: {out_file}")
+        total_ok = 0
+        for idx, t_date in enumerate(target_dates):
+            print(f"\n[{idx+1}/{len(target_dates)}] 正在處理歷史交易日: {t_date}...")
+            ok = sync_single_day(args.data_dir, t_date, supabase_url, supabase_key, args.dry_run)
+            if ok:
+                total_ok += 1
 
-    if args.dry_run or not (supabase_url and supabase_key):
-        if not (supabase_url and supabase_key):
-            print("\n[ℹ️] 未偵測到 SUPABASE_URL 或 SUPABASE_KEY 環境變數。")
-            print("[ℹ️] 系統已切換為 Dry-Run 模式完成本地 JSON 驗證。")
-            print("[ℹ️] 如需正式推送到雲端，請在 .env 中加入 SUPABASE_URL 與 SUPABASE_KEY！")
-        else:
-            print("\n[✓] Dry-Run 演練模式完成！資料結構完全符合 Supabase Schema。")
+        print("\n" + "★" * 65)
+        print(f"[🎉] 歷史批次同步全數完成！成功處理 {total_ok}/{len(target_dates)} 個交易日。")
+        print("★" * 65)
+
+        if not args.dry_run and supabase_url and supabase_key:
+            tg_msg = (
+                f"🏛️ *myStock 歷史籌碼戰情回補完成*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📅 涵蓋區間：`{target_dates[0]}` ~ `{target_dates[-1]}`\n"
+                f"📊 回補天數：`共 {total_ok} 個交易日`\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👉 [點此在手機開啟戰情室](https://ark945-mystock.hf.space)"
+            )
+            send_telegram_notify(tg_msg)
         return
 
-    # 正式寫入 Supabase
-    print("\n[*] 正在將數據推送到 Supabase PostgreSQL 雲端資料庫...")
-    success = True
-    success &= upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "chip_accumulation_signals", payload["chip_accumulation_signals"], on_conflict="trade_date,period_days,symbol,broker_name")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
+    # 單日模式
+    target_date = args.date
+    if not target_date:
+        absr1_files, _ = find_local_files(args.data_dir)
+        target_date = extract_date_from_filename(os.path.basename(absr1_files[-1]))
 
-    if success:
+    success = sync_single_day(args.data_dir, target_date, supabase_url, supabase_key, args.dry_run)
+    if success and not args.dry_run and supabase_url and supabase_key:
         print("\n" + "★" * 65)
-        print(f"[🎉] 成功將 {actual_date} 全市場主力籌碼情報同步至 myStock 戰情室！")
+        print(f"[🎉] 成功將 {target_date} 全市場主力籌碼情報同步至 myStock 戰情室！")
         print("★" * 65)
         tg_msg = (
-            f"🏛️ *myStock 雲端籌碼戰情室已同步更新 ({actual_date})*\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📥 四週期主力吸籌：`{len(payload['chip_accumulation_signals'])} 筆`\n"
-            f"📤 主力出貨避坑下車：`{len(payload['chip_exit_signals'])} 筆`\n"
-            f"🌐 外資與法人重押：`{len(payload['broker_institution_ranks'])} 筆`\n"
-            f"⚡ 尾盤放量突襲：`{len(payload['vwap_attribution_signals'])} 筆`\n"
+            f"🏛️ *myStock 雲端籌碼戰情室已同步更新 ({target_date})*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"👉 [點此在手機開啟戰情室](https://ark945-mystock.hf.space)"
         )

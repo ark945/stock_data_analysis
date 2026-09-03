@@ -98,7 +98,8 @@ def scan_exit_distribution(
     ignition_threshold_ratio: float = 0.20,
     exclude_etf: bool = True,
     symbol_filter: Optional[str] = None,
-    broker_filter: Optional[str] = None
+    broker_filter: Optional[str] = None,
+    target_date: Optional[str] = None
 ) -> pd.DataFrame:
     """
     掃描「長期吸籌 -> 近期翻臉出貨」的個股＋主力分點組合
@@ -112,6 +113,10 @@ def scan_exit_distribution(
     if not all_files:
         print(f"[!] 於目錄 {data_dir} 未找到任何 Parquet 檔案。")
         return pd.DataFrame()
+
+    if target_date:
+        import re
+        all_files = [f for f in all_files if (re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(f)) and re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(f)).group(0) <= target_date)]
 
     long_files = all_files[-long_days:] if len(all_files) >= long_days else all_files
     recent_files = all_files[-recent_days:] if len(all_files) >= recent_days else all_files
