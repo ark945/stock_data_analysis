@@ -188,7 +188,7 @@ def run_institutional_ranking_analysis(
             lambda x: "🎯 絕對鎖碼 (純買無賣)" if x >= 95.0 else ("🔥 積極建倉" if x >= 75.0 else "⚖️ 換手進出")
         )
 
-    # 3. 全市場分點多空之王排行 (全市場今日淨買超金額 Top 10 與淨賣超 Top 10)
+    # 3. 全市場分點多空之王排行 (全市場今日淨買超金額 Top 10 與淨賣超 Top 10，含核心個股穿透)
     sql_bull = f"""
         SELECT 
             broker_id,
@@ -207,6 +207,31 @@ def run_institutional_ranking_analysis(
     df_bull["多空陣營"] = "🐂 多頭司令 (買超之王)"
     df_bull["券商分點"] = df_bull["broker_id"].map(lambda x: broker_names.get(str(x), str(x)))
 
+    # 多頭核心持股穿透
+    sql_bull_stocks = f"""
+        WITH top_b AS (
+            SELECT broker_id FROM read_parquet('{sql_path}')
+            GROUP BY broker_id ORDER BY SUM(net_amt) DESC LIMIT 10
+        ),
+        ranked AS (
+            SELECT 
+                b.broker_id,
+                b.symbol,
+                b.net_amt / 100000.0 AS stock_net_yi,
+                ROW_NUMBER() OVER (PARTITION BY b.broker_id ORDER BY b.net_amt DESC) AS rk
+            FROM read_parquet('{sql_path}') b
+            JOIN top_b t ON b.broker_id = t.broker_id
+            WHERE b.net_amt > 0 AND NOT (b.symbol LIKE '00%') AND b.symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
+        )
+        SELECT broker_id, symbol, stock_net_yi FROM ranked WHERE rk <= 3
+    """
+    df_bs = duckdb.query(sql_bull_stocks).df()
+    df_bs["stock_name"] = df_bs["symbol"].map(lambda x: stock_names.get(str(x), str(x)))
+    bull_map = {}
+    for bid, g in df_bs.groupby("broker_id"):
+        bull_map[bid] = "、".join([f"{r['stock_name']}(+{r['stock_net_yi']:.1f}億)" for _, r in g.iterrows()])
+    df_bull["核心標的"] = df_bull["broker_id"].map(lambda x: bull_map.get(x, "分散多檔"))
+
     sql_bear = f"""
         SELECT 
             broker_id,
@@ -222,8 +247,33 @@ def run_institutional_ranking_analysis(
         LIMIT 10
     """
     df_bear = duckdb.query(sql_bear).df()
-    df_bear["多空陣營"] = "🐻 空頭殺手 (賣超調節)"
+    df_bear["多空陣營"] = "🐻 空頭調節 (賣超大戶)"
     df_bear["券商分點"] = df_bear["broker_id"].map(lambda x: broker_names.get(str(x), str(x)))
+
+    # 空頭調節持股穿透
+    sql_bear_stocks = f"""
+        WITH top_b AS (
+            SELECT broker_id FROM read_parquet('{sql_path}')
+            GROUP BY broker_id ORDER BY SUM(net_amt) ASC LIMIT 10
+        ),
+        ranked AS (
+            SELECT 
+                b.broker_id,
+                b.symbol,
+                b.net_amt / 100000.0 AS stock_net_yi,
+                ROW_NUMBER() OVER (PARTITION BY b.broker_id ORDER BY b.net_amt ASC) AS rk
+            FROM read_parquet('{sql_path}') b
+            JOIN top_b t ON b.broker_id = t.broker_id
+            WHERE b.net_amt < 0 AND NOT (b.symbol LIKE '00%') AND b.symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
+        )
+        SELECT broker_id, symbol, stock_net_yi FROM ranked WHERE rk <= 3
+    """
+    df_bear_s = duckdb.query(sql_bear_stocks).df()
+    df_bear_s["stock_name"] = df_bear_s["symbol"].map(lambda x: stock_names.get(str(x), str(x)))
+    bear_map = {}
+    for bid, g in df_bear_s.groupby("broker_id"):
+        bear_map[bid] = "、".join([f"{r['stock_name']}({r['stock_net_yi']:.1f}億)" for _, r in g.iterrows()])
+    df_bear["核心標的"] = df_bear["broker_id"].map(lambda x: bear_map.get(x, "分散多檔"))
 
     df_market_kings = pd.concat([df_bull, df_bear], ignore_index=True)
 
@@ -295,10 +345,10 @@ def export_institutional_rankings_to_excel(
                 out_i.to_excel(writer, index=False, sheet_name="本土法人與總公司重押榜")
                 _style_sheet(writer.sheets["本土法人與總公司重押榜"], "B45309", labels_i)
 
-            # Sheet 3: 全市場分點多空榜
+            # Sheet 3: 全市場分點多空榜 (含核心個股穿透)
             if not df_market_kings.empty:
-                cols_m = ["多空陣營", "券商分點", "net_amt_yi", "total_buy_yi", "total_sell_yi", "net_vol_sheets"]
-                labels_m = ["多空陣營", "券商分點", "淨買超金額(億元)", "總買進金額(億元)", "總賣出金額(億元)", "淨買超張數(張)"]
+                cols_m = ["多空陣營", "券商分點", "net_amt_yi", "核心標的", "total_buy_yi", "total_sell_yi", "net_vol_sheets"]
+                labels_m = ["多空陣營", "券商分點", "淨買超金額(億元)", "核心重押/調節標的 TOP 3", "總買進金額(億元)", "總賣出金額(億元)", "淨買超張數(張)"]
                 out_m = df_market_kings[cols_m].rename(columns=dict(zip(cols_m, labels_m)))
                 out_m["淨買超金額(億元)"] = out_m["淨買超金額(億元)"].round(2)
                 out_m["總買進金額(億元)"] = out_m["總買進金額(億元)"].round(2)
@@ -375,24 +425,30 @@ def send_institutional_rankings_email(
         </tr>
         """
 
-    # 全市場多空之王 Rows
+    # 全市場多空之王 Rows (含個股穿透)
     bull_df = df_market_kings[df_market_kings["多空陣營"].str.contains("多頭")].head(5)
     bear_df = df_market_kings[df_market_kings["多空陣營"].str.contains("空頭")].head(5)
     kings_rows = ""
     for _, r in bull_df.iterrows():
         kings_rows += f"""
-        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 12px; height: 32px;">
+        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 12px; height: 36px;">
             <td style="padding: 6px 8px; color: #16a34a; font-weight: 700;">🐂 {r['券商分點']}</td>
             <td style="padding: 6px 8px; text-align: right; font-weight: 700; color: #dc2626;">+{r['net_amt_yi']:.2f} 億</td>
-            <td style="padding: 6px 8px; text-align: right; color: #64748b;">買進 {r['total_buy_yi']:.1f}億 / 賣出 {r['total_sell_yi']:.1f}億</td>
+            <td style="padding: 6px 8px; text-align: left; color: #0f172a;">
+                <strong>{r['核心標的']}</strong>
+            </td>
+            <td style="padding: 6px 8px; text-align: right; color: #64748b; font-size: 11px;">進 {r['total_buy_yi']:.1f}億 / 出 {r['total_sell_yi']:.1f}億</td>
         </tr>
         """
     for _, r in bear_df.iterrows():
         kings_rows += f"""
-        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 12px; height: 32px;">
+        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 12px; height: 36px;">
             <td style="padding: 6px 8px; color: #dc2626; font-weight: 700;">🐻 {r['券商分點']}</td>
             <td style="padding: 6px 8px; text-align: right; font-weight: 700; color: #16a34a;">{r['net_amt_yi']:.2f} 億</td>
-            <td style="padding: 6px 8px; text-align: right; color: #64748b;">買進 {r['total_buy_yi']:.1f}億 / 賣出 {r['total_sell_yi']:.1f}億</td>
+            <td style="padding: 6px 8px; text-align: left; color: #0f172a;">
+                <strong>{r['核心標的']}</strong>
+            </td>
+            <td style="padding: 6px 8px; text-align: right; color: #64748b; font-size: 11px;">進 {r['total_buy_yi']:.1f}億 / 出 {r['total_sell_yi']:.1f}億</td>
         </tr>
         """
 
@@ -561,6 +617,14 @@ def print_terminal_summary(df_foreign: pd.DataFrame, df_inst: pd.DataFrame, df_k
         print("-" * 90)
         for _, r in df_inst.head(10).iterrows():
             print(f"{str(r['券商分點'])[:10]:<14} {str(r['股票代號']):<6} {str(r['股票名稱'])[:6]:<8} {r['net_amt_yi']:>10.2f} {r['buy_avg_price']:>8.1f} {r['buy_purity_pct']:>6.1f} {str(r['法人標籤']):<14}")
+
+    if not df_kings.empty:
+        print("\n" + "=" * 90)
+        print("⚔️ 【全市場分點多空之王排行 (核心重押/調節個股穿透)】")
+        print("-" * 90)
+        for _, r in df_kings.iterrows():
+            icon = "🐂" if "多頭" in str(r['多空陣營']) else "🐻"
+            print(f"{icon} {str(r['券商分點'])[:12]:<12} {r['net_amt_yi']:>8.2f}億 ➔ 核心標的：{r['核心標的']}")
     print("=" * 90 + "\n")
 
 
