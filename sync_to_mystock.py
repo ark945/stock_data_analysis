@@ -239,8 +239,18 @@ def prepare_chip_payloads(
     exit_rows = []
     if not df_exit.empty:
         for _, r in df_exit.iterrows():
-            sym = str(r.get("symbol", ""))
-            sname = s_names.get(sym, sym)
+            target_str = str(r.get("股票標的", ""))
+            sym = str(r.get("symbol", "")).strip()
+            if (not sym or sym == "None") and "-" in target_str:
+                sym = target_str.split("-")[0].strip()
+
+            sname = str(r.get("stock_name", "")).strip()
+            if not sname or sname == "None":
+                if "-" in target_str:
+                    sname = target_str.split("-")[1].split("(")[0].strip()
+                else:
+                    sname = s_names.get(sym, sym)
+
             exit_rows.append({
                 "trade_date": actual_date,
                 "exit_type": "20d基期-5d出貨",
