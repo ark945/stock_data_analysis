@@ -18,6 +18,8 @@ import sys
 import glob
 import argparse
 from datetime import datetime
+import pandas as pd
+import numpy as np
 
 from cloud_gdrive_downloader import download_recent_parquet_files, download_recent_close_price_files, extract_date_from_filename
 from cloud_report_generator import (
