@@ -6,36 +6,31 @@ env:
 
 on:
   # =========================================================================
-  # 【GitHub 內建排程已關閉】改由外部 Cron-job.org 精準定時 Webhook 觸發
-  # 若未來想重新啟用 GitHub 內建排程，解除下方註解即可：
+  # 支援定時排程 / 外部 Webhook (cron-job.org) 觸發
   # =========================================================================
   # schedule:
-  #   # 每日 20:07 (台灣時間，即 UTC 12:07)
   #   - cron: "7 12 * * 1-5"
 
+  # =========================================================================
+  # 人工點擊「Run workflow」：可選哪一天資料，且預設不發送 Email
+  # =========================================================================
   workflow_dispatch:
-    # =========================================================================
-    # 【備用自訂參數區塊】若未來想恢復手動輸入自訂天數與門檻，解除下方註解即可：
-    # =========================================================================
-    # inputs:
-    #   lookback_days:
-    #     description: "回溯分析交易天數 (預設: 5)"
-    #     required: false
-    #     default: "5"
-    #   min_amt:
-    #     description: "最小淨買超金額門檻 (億元，預設: 0.3)"
-    #     required: false
-    #     default: "0.3"
-    #   min_ratio:
-    #     description: "最小買進純度佔比 (預設: 70)"
-    #     required: false
-    #     default: "70"
+    inputs:
+      target_date:
+        description: "指定重跑交易日 (YYYY-MM-DD，留空則自動處理最新當天)"
+        required: false
+        default: ""
+      send_email:
+        description: "是否發送 Email 與 Telegram 報告 (手動點擊預設為關閉，不打擾收件人)"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   run-daily-report:
-    name: 執行川湖模型分析並派送 Email 報告
+    name: 執行主力籌碼分析並同步戰情室
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: 檢出專案代碼 (Checkout)
@@ -52,7 +47,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install duckdb pandas numpy openpyxl requests beautifulsoup4 google-api-python-client google-auth
 
-      - name: 執行雲端分析與派發 Email / Telegram
+      - name: 判斷執行模式 (排程預設發信 vs 人工手動不發信)
+        id: config-mode
+        run: |
+          # 若非手動 workflow_dispatch (例如 schedule 或 repository_dispatch)，預設發送 Email
+          # 若為手動 workflow_dispatch，則依據使用者勾選的 send_email (預設為 false 不發信)
+          SEND_EMAIL="true"
+          TARGET_DATE=""
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_DATE="${{ github.event.inputs.target_date }}"
+            if [ "${{ github.event.inputs.send_email }}" != "true" ]; then
+              SEND_EMAIL="false"
+            fi
+          fi
+
+          echo "send_email=$SEND_EMAIL" >> $GITHUB_OUTPUT
+          echo "target_date=$TARGET_DATE" >> $GITHUB_OUTPUT
+          echo "=================================================="
+          echo "[*] 模式設定完成:"
+          echo "    - 觸發事件: ${{ github.event_name }}"
+          echo "    - 指定交易日: '${TARGET_DATE:-最新當天}'"
+          echo "    - 是否發送 Email / Telegram: '${SEND_EMAIL}'"
+          echo "=================================================="
+
+      - name: 執行雲端分析與無條件刪除舊資料並同步 Supabase
         env:
           GDRIVE_UPLOAD_URL: ${{ secrets.GDRIVE_UPLOAD_URL }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
@@ -67,13 +86,23 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          INPUT_LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '5' }}
-          INPUT_MIN_AMT: ${{ github.event.inputs.min_amt || '0.3' }}
-          INPUT_MIN_RATIO: ${{ github.event.inputs.min_ratio || '70' }}
         run: |
-          python main_cloud_runner.py --output-dir ./daily_reports
+          CMD="python main_cloud_runner.py --output-dir ./daily_reports"
+          
+          # 若有指定日期，加上 --date
+          if [ -n "${{ steps.config-mode.outputs.target_date }}" ]; then
+            CMD="$CMD --date ${{ steps.config-mode.outputs.target_date }}"
+          fi
 
-      - name: 執行主力出貨/逃離雷達並派發 Email (反向重押偵測)
+          # 若不發送 Email，加上 --no-email
+          if [ "${{ steps.config-mode.outputs.send_email }}" = "false" ]; then
+            CMD="$CMD --no-email"
+          fi
+
+          echo "執行命令: $CMD"
+          eval $CMD
+
+      - name: 執行主力出貨/逃離雷達 (反向重押偵測)
         env:
           SMTP_SERVER: ${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
@@ -81,7 +110,20 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
         run: |
-          python find_exit_cases.py --data-dir ./temp_cache_parquet --output ./daily_reports/exit_distribution_cases.xlsx --email
+          CMD="python find_exit_cases.py --data-dir ./temp_cache_parquet --output ./daily_reports/exit_distribution_cases.xlsx"
+
+          # 若有指定日期，加上 --date
+          if [ -n "${{ steps.config-mode.outputs.target_date }}" ]; then
+            CMD="$CMD --date ${{ steps.config-mode.outputs.target_date }}"
+          fi
+
+          # 僅在允許發信時帶入 --email
+          if [ "${{ steps.config-mode.outputs.send_email }}" = "true" ]; then
+            CMD="$CMD --email"
+          fi
+
+          echo "執行出貨雷達命令: $CMD"
+          eval $CMD
 
       - name: 保存產出報表 (僅 HTML 與 Excel)
         if: always()

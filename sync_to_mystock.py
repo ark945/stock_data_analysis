@@ -21,6 +21,7 @@ import argparse
 from typing import Dict, List, Any, Optional
 import urllib.request
 import urllib.error
+import ssl
 
 import pandas as pd
 import numpy as np
@@ -359,8 +360,37 @@ def prepare_chip_payloads(
     return payload
 
 
+def purge_date_from_supabase(supabase_url: str, supabase_key: str, target_date: str) -> bool:
+    """在同步前無條件刪除目標交易日之所有舊紀錄，確保全新乾淨寫入不殘留"""
+    print(f"[*] 執行【無條件刪除】：正在清空 {target_date} 於 Supabase 之所有舊資料...")
+    tables = [
+        "daily_chip_summary",
+        "chip_accumulation_signals",
+        "chip_exit_signals",
+        "broker_institution_ranks",
+        "vwap_attribution_signals"
+    ]
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}"
+    }
+    for table in tables:
+        url = f"{supabase_url}/rest/v1/{table}?trade_date=eq.{target_date}"
+        try:
+            req = urllib.request.Request(url, headers=headers, method="DELETE")
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
+                pass
+        except Exception as e:
+            print(f"[!] 清除 {table} ({target_date}) 舊資料提示: {e}")
+    print(f"[✓] {target_date} 舊資料已完全清空，準備寫入全新計算結果！")
+    return True
+
+
 def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase_key: str, dry_run: bool = False) -> bool:
-    """同步單一交易日"""
+    """同步單一交易日 (寫入前無條件清空當天舊資料)"""
     payload = prepare_chip_payloads(data_dir, target_date)
     actual_date = payload["trade_date"]
 
@@ -373,6 +403,9 @@ def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase
 
     if dry_run or not (supabase_url and supabase_key):
         return True
+
+    # 無條件刪除當天舊資料，確保零重複、零殘留
+    purge_date_from_supabase(supabase_url, supabase_key, actual_date)
 
     success = True
     success &= upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")

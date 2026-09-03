@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--lookback-days", type=int, default=60, help="回溯最大交易天數 (預設: 60 日)")
     parser.add_argument("--local-dir", default="", help="指定本機資料目錄 (若指定則略過 GDrive 下載)")
     parser.add_argument("--output-dir", default="./daily_reports", help="報表產出目錄")
+    parser.add_argument("--date", default="", help="指定目標交易日 (YYYY-MM-DD，若指定則以該日為最新截斷點)")
     parser.add_argument("--no-email", action="store_true", help="僅產出檔案，不寄送 Email")
     args = parser.parse_args()
 
@@ -92,6 +93,12 @@ def main():
     # 依日期由舊到新排序
     absr1_files.sort(key=lambda x: extract_date_from_filename(os.path.basename(x)))
     close_files_all.sort(key=lambda x: extract_date_from_filename(os.path.basename(x)))
+
+    if args.date:
+        print(f"[*] 指定分析基準交易日: {args.date} (自動截斷此日期之後之數據)")
+        absr1_files = [f for f in absr1_files if extract_date_from_filename(os.path.basename(f)) <= args.date]
+        close_files_all = [f for f in close_files_all if extract_date_from_filename(os.path.basename(f)) <= args.date]
+
     total_files = len(absr1_files)
     print(f"[✓] 共有 {total_files} 個交易日分點 Parquet 檔案就緒！")
     if close_files_all:
@@ -159,7 +166,7 @@ def main():
         "60d": df_60d
     }
 
-    latest_date = sum_5d.get("end_date") or sum_20d.get("end_date") or today_str
+    latest_date = args.date if args.date else (sum_5d.get("end_date") or sum_20d.get("end_date") or today_str)
 
     print(f"[✓] 四週期模型分析全數完成！")
     print(f"    - 近 5 日短線點火標的: {len(df_5d):,} 組")
@@ -235,8 +242,10 @@ def main():
     if supabase_url and supabase_key:
         print("[*] 偵測到 Supabase 設定，正在將最新籌碼戰情同步至 myStock 雲端戰情室...")
         try:
-            from sync_to_mystock import prepare_chip_payloads, upsert_to_supabase
+            from sync_to_mystock import prepare_chip_payloads, upsert_to_supabase, purge_date_from_supabase
             target_data_dir = args.local_dir if args.local_dir and os.path.exists(args.local_dir) else "./temp_cache_parquet"
+            # 無條件刪除目標交易日之舊資料，確保全新乾淨寫入不殘留
+            purge_date_from_supabase(supabase_url, supabase_key, latest_date)
             payload = prepare_chip_payloads(target_data_dir, latest_date)
             upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")
             upsert_to_supabase(supabase_url, supabase_key, "chip_accumulation_signals", payload["chip_accumulation_signals"], on_conflict="trade_date,period_days,symbol,broker_name")
