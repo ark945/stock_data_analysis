@@ -1,0 +1,63 @@
+name: 夜間極速衍生指標同步入庫 (Nightly Derivatives Sync)
+
+env:
+  TZ: "Asia/Taipei"
+  PYTHONIOENCODING: "utf-8"
+
+on:
+  # =========================================================================
+  # 支援手動點擊「Run workflow」或 Cron-job.org 外部定時呼叫 API
+  # =========================================================================
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "指定交易日 (YYYY-MM-DD，留空則自動處理最新當天)"
+        required: false
+        default: ""
+
+  repository_dispatch:
+    types: [trigger-derivatives-sync, run-derivatives-sync]
+
+jobs:
+  sync-derivatives:
+    name: 夜間衍生指標極速量化運算與戰情室同步 (約 25 秒)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 檢出專案代碼 (Checkout)
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 安裝輕量量化套件 (duckdb / pandas / pyarrow / google-api)
+        run: |
+          pip install duckdb pandas pyarrow openpyxl google-api-python-client google-auth
+
+      - name: 執行衍生指標運算並同步 Supabase (軋空 / 接刀 / 集中度)
+        env:
+          PYTHONIOENCODING: "utf-8"
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TARGET_DATE: ${{ github.event.inputs.target_date }}
+        run: |
+          if [ -n "$TARGET_DATE" ]; then
+            python run_nightly_derivatives_sync.py --date "$TARGET_DATE"
+          else
+            python run_nightly_derivatives_sync.py
+          fi
+
+      - name: 保存衍生戰報 Excel (Artifacts)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-derivatives-excel
+          path: ./daily_reports/籌碼衍生指標戰報_*.xlsx
+          retention-days: 14
+          if-no-files-found: ignore
