@@ -304,6 +304,8 @@ def main():
             upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
             upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
             upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
+            if payload.get("chip_derivatives_signals"):
+                upsert_to_supabase(supabase_url, supabase_key, "chip_derivatives_signals", payload["chip_derivatives_signals"], on_conflict="trade_date,signal_type,symbol")
             has_synced_mystock = True
             print("[✓] 成功同步最新主力情報至 myStock 雲端戰情室！")
         except Exception as e:
