@@ -382,63 +382,65 @@ def prepare_chip_payloads(
     print("[5/5] 運算籌碼衍生指標 (軋空/接刀/集中度)...")
     deriv_rows = []
     try:
-        from chip_derivatives_engine import run_derivatives_analysis_for_date
+        from chip_derivatives_engine import run_derivatives_analysis_for_date, get_stock_name_map
+        stock_name_cache = get_stock_name_map()
         d_res = run_derivatives_analysis_for_date(actual_date, broker_dir=data_dir, output_dir="./output")
+        
+        def _parse_deriv_row(r, sig_type, default_tag, default_guide):
+            sym = str(r.get("symbol", ""))
+            name = str(r.get("stock_name") or r.get("name") or "")
+            if not name or name == "未知":
+                name = stock_name_cache.get(sym, sym)
+            
+            raw_market = str(r.get("market") or "上市")
+            if "TWSE" in raw_market.upper() or "上市" in raw_market:
+                market = "上市"
+            elif "TPEX" in raw_market.upper() or "上櫃" in raw_market:
+                market = "上櫃"
+            else:
+                market = raw_market
+
+            close_val = float(r["close"]) if pd.notna(r.get("close")) else (float(r["close_price"]) if pd.notna(r.get("close_price")) else None)
+            short_ratio = float(r["short_margin_ratio_pct"]) if pd.notna(r.get("short_margin_ratio_pct")) else None
+            m_net = float(r["margin_net"]) if pd.notna(r.get("margin_net")) else None
+            s_net = float(r["short_net"]) if pd.notna(r.get("short_net")) else None
+
+            diff_cnt = None
+            if pd.notna(r.get("diff_broker_count")):
+                diff_cnt = float(r["diff_broker_count"])
+            elif pd.notna(r.get("broker_diff")):
+                diff_cnt = float(r["broker_diff"])
+
+            large_pct = float(r["large_shareholder_pct"]) if pd.notna(r.get("large_shareholder_pct")) else None
+            retail_pct = float(r["retail_shareholder_pct"]) if pd.notna(r.get("retail_shareholder_pct")) else None
+
+            return {
+                "trade_date": actual_date,
+                "signal_type": sig_type,
+                "symbol": sym,
+                "stock_name": name,
+                "market": market,
+                "close_price": close_val,
+                "short_margin_ratio_pct": short_ratio,
+                "margin_net": m_net,
+                "short_net": s_net,
+                "diff_broker_count": diff_cnt,
+                "large_shareholder_pct": large_pct,
+                "retail_shareholder_pct": retail_pct,
+                "persona_tag": default_tag,
+                "action_guide": default_guide
+            }
+
         if d_res:
             if not d_res.get("squeeze", pd.DataFrame()).empty:
-                for _, sr in d_res["squeeze"].head(20).iterrows():
-                    deriv_rows.append({
-                        "trade_date": actual_date,
-                        "signal_type": "squeeze",
-                        "symbol": str(sr.get("symbol", "")),
-                        "stock_name": str(sr.get("name", "")),
-                        "market": str(sr.get("market", "上市")),
-                        "close_price": float(sr.get("close", 0)) if pd.notna(sr.get("close")) else None,
-                        "short_margin_ratio_pct": float(sr.get("short_margin_ratio_pct", 0)) if pd.notna(sr.get("short_margin_ratio_pct")) else None,
-                        "margin_net": float(sr.get("margin_net", 0)) if pd.notna(sr.get("margin_net")) else None,
-                        "short_net": float(sr.get("short_net", 0)) if pd.notna(sr.get("short_net")) else None,
-                        "diff_broker_count": float(sr.get("diff_broker_count", 0)) if pd.notna(sr.get("diff_broker_count")) else None,
-                        "large_shareholder_pct": float(sr.get("large_shareholder_pct", 0)) if pd.notna(sr.get("large_shareholder_pct")) else None,
-                        "retail_shareholder_pct": float(sr.get("retail_shareholder_pct", 0)) if pd.notna(sr.get("retail_shareholder_pct")) else None,
-                        "persona_tag": "🚀 極品軋空",
-                        "action_guide": "高券資比+融券暴增+家數差集中，空頭回補爆發力強"
-                    })
+                for _, sr in d_res["squeeze"].head(25).iterrows():
+                    deriv_rows.append(_parse_deriv_row(sr, "squeeze", "🚀 極品軋空", "高券資比+融券暴增+家數差集中，空頭回補爆發力強"))
             if not d_res.get("trap", pd.DataFrame()).empty:
-                for _, tr in d_res["trap"].head(20).iterrows():
-                    deriv_rows.append({
-                        "trade_date": actual_date,
-                        "signal_type": "trap",
-                        "symbol": str(tr.get("symbol", "")),
-                        "stock_name": str(tr.get("name", "")),
-                        "market": str(tr.get("market", "上市")),
-                        "close_price": float(tr.get("close", 0)) if pd.notna(tr.get("close")) else None,
-                        "short_margin_ratio_pct": float(tr.get("short_margin_ratio_pct", 0)) if pd.notna(tr.get("short_margin_ratio_pct")) else None,
-                        "margin_net": float(tr.get("margin_net", 0)) if pd.notna(tr.get("margin_net")) else None,
-                        "short_net": float(tr.get("short_net", 0)) if pd.notna(tr.get("short_net")) else None,
-                        "diff_broker_count": float(tr.get("diff_broker_count", 0)) if pd.notna(tr.get("diff_broker_count")) else None,
-                        "large_shareholder_pct": float(tr.get("large_shareholder_pct", 0)) if pd.notna(tr.get("large_shareholder_pct")) else None,
-                        "retail_shareholder_pct": float(tr.get("retail_shareholder_pct", 0)) if pd.notna(tr.get("retail_shareholder_pct")) else None,
-                        "persona_tag": "⚠️ 散戶接刀",
-                        "action_guide": "融資暴增+主力倒貨+家數差擴大，散戶接刀套牢風險極高"
-                    })
+                for _, tr in d_res["trap"].head(25).iterrows():
+                    deriv_rows.append(_parse_deriv_row(tr, "trap", "⚠️ 散戶接刀", "融資暴增+主力倒貨+家數差擴大，散戶接刀套牢風險極高"))
             if not d_res.get("concentrated", pd.DataFrame()).empty:
-                for _, cr in d_res["concentrated"].head(20).iterrows():
-                    deriv_rows.append({
-                        "trade_date": actual_date,
-                        "signal_type": "concentrated",
-                        "symbol": str(cr.get("symbol", "")),
-                        "stock_name": str(cr.get("name", "")),
-                        "market": str(cr.get("market", "上市")),
-                        "close_price": float(cr.get("close", 0)) if pd.notna(cr.get("close")) else None,
-                        "short_margin_ratio_pct": float(cr.get("short_margin_ratio_pct", 0)) if pd.notna(cr.get("short_margin_ratio_pct")) else None,
-                        "margin_net": float(cr.get("margin_net", 0)) if pd.notna(cr.get("margin_net")) else None,
-                        "short_net": float(cr.get("short_net", 0)) if pd.notna(cr.get("short_net")) else None,
-                        "diff_broker_count": float(cr.get("diff_broker_count", 0)) if pd.notna(cr.get("diff_broker_count")) else None,
-                        "large_shareholder_pct": float(cr.get("large_shareholder_pct", 0)) if pd.notna(cr.get("large_shareholder_pct")) else None,
-                        "retail_shareholder_pct": float(cr.get("retail_shareholder_pct", 0)) if pd.notna(cr.get("retail_shareholder_pct")) else None,
-                        "persona_tag": "💎 籌碼極度集中",
-                        "action_guide": "買賣家數差大幅負值，少數主力分點積極收納籌碼"
-                    })
+                for _, cr in d_res["concentrated"].head(25).iterrows():
+                    deriv_rows.append(_parse_deriv_row(cr, "concentrated", "💎 籌碼極度集中", "買賣家數差大幅負值，少數主力分點積極收納籌碼"))
     except Exception as _de:
         print(f"[!] 衍生指標運算提示: {_de}")
 
@@ -544,6 +546,27 @@ def main():
 
     supabase_url = args.supabase_url or os.getenv("SUPABASE_URL")
     supabase_key = args.supabase_key or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not supabase_key:
+        for env_p in [
+            r"d:\MyProject\myStock\.env",
+            os.path.join(os.path.dirname(__file__), "..", "myStock", ".env"),
+            os.path.join(os.path.dirname(__file__), ".env")
+        ]:
+            if os.path.exists(env_p):
+                try:
+                    with open(env_p, "rb") as ef:
+                        raw = ef.read().decode("utf-8", errors="ignore")
+                        for line in raw.splitlines():
+                            if "=" in line and not line.strip().startswith("#"):
+                                k, v = line.strip().split("=", 1)
+                                k, v = k.strip(), v.strip().strip("'\"")
+                                if k in ["SUPABASE_URL"] and not supabase_url:
+                                    supabase_url = v
+                                elif k in ["SUPABASE_KEY"] and not supabase_key:
+                                    supabase_key = v
+                except Exception:
+                    pass
 
     # 批次同步模式
     if args.start_date:

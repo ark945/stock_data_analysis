@@ -82,6 +82,24 @@ def calc_broker_divergence(trade_date: str, broker_file: str, min_sheets: float 
         return pd.DataFrame()
 
 
+def load_close_data(trade_date: str, broker_dir: str = "./20260822分點資料") -> pd.DataFrame:
+    """讀取指定交易日之收盤價 Parquet 檔以取得最新收盤價與市場別"""
+    for d in [broker_dir, "./temp_cache_parquet", "./cloud_data"]:
+        p = os.path.join(d, f"api_close1_{trade_date}_{trade_date}.parquet")
+        if not os.path.exists(p):
+            cands = glob.glob(os.path.join(d, f"api_close1_*{trade_date}*.parquet"))
+            if cands:
+                p = cands[0]
+        if os.path.exists(p):
+            try:
+                df = pd.read_parquet(p)
+                if not df.empty:
+                    return df[["symbol", "market", "close", "name"]].drop_duplicates(subset=["symbol"])
+            except Exception:
+                pass
+    return pd.DataFrame()
+
+
 def load_margin_data(trade_date: str, margin_dirs: List[str]) -> pd.DataFrame:
     """讀取指定交易日之融資融券 Parquet"""
     filename = f"api_margin_{trade_date}_{trade_date}.parquet"
@@ -165,8 +183,10 @@ def run_derivatives_analysis_for_date(
 
     broker_file = os.path.join(broker_dir, f"api_absr1_{trade_date}_{trade_date}.parquet")
     if not os.path.exists(broker_file):
-        # 嘗試尋找任何包含該日期的分點檔
-        cands = glob.glob(os.path.join(broker_dir, f"*{trade_date}*.parquet"))
+        # 嘗試尋找任何包含該日期的分點檔，優先匹配 api_absr1
+        cands = glob.glob(os.path.join(broker_dir, f"api_absr1_*{trade_date}*.parquet"))
+        if not cands:
+            cands = [f for f in glob.glob(os.path.join(broker_dir, f"*{trade_date}*.parquet")) if "margin" not in os.path.basename(f).lower() and "taifex" not in os.path.basename(f).lower() and "tdcc" not in os.path.basename(f).lower()]
         if cands:
             broker_file = cands[0]
         else:
@@ -182,6 +202,9 @@ def run_derivatives_analysis_for_date(
     df_div = calc_broker_divergence(trade_date, broker_file)
     if not df_div.empty:
         df_div["stock_name"] = df_div["symbol"].map(lambda s: stock_map.get(str(s), "未知"))
+        df_div["name"] = df_div["stock_name"]
+        df_div["diff_broker_count"] = df_div["broker_diff"]
+        
         # 籌碼高度集中 TOP (負值最大)
         df_concentrated = df_div[df_div["broker_diff"] < 0].sort_values(by="broker_diff", ascending=True).head(top_n).copy()
         df_concentrated["特徵標籤"] = "🔥 籌碼極度集中 (散戶全倒給少數大戶)"
@@ -199,20 +222,57 @@ def run_derivatives_analysis_for_date(
     df_squeeze = pd.DataFrame()
     df_trap = pd.DataFrame()
 
-    if not df_margin.empty and not df_div.empty:
-        m_merged = pd.merge(df_margin, df_div[["symbol", "broker_diff", "total_amt_yi"]], on="symbol", how="inner")
-        
-        # 極品軋空：券資比 > 10% 且 融券增減 > 20 張 且 家數差為負 (集中)
-        sq_mask = (m_merged["short_margin_ratio_pct"] >= 10.0) & (m_merged["short_net"] >= 20) & (m_merged["broker_diff"] < 0)
-        df_squeeze = m_merged[sq_mask].sort_values(by=["short_margin_ratio_pct", "short_net"], ascending=[False, False]).head(top_n).copy()
-        if not df_squeeze.empty:
-            df_squeeze["特徵標籤"] = "🚀 極品軋空候選 (高券資比+融券暴增+大戶收籌)"
+    if not df_margin.empty:
+        # 為 concentrated 與 dispersed 補齊收盤價與資券指標
+        margin_cols = [c for c in ["symbol", "market", "close", "short_margin_ratio_pct", "margin_net", "short_net", "name"] if c in df_margin.columns]
+        if not df_concentrated.empty:
+            df_concentrated = pd.merge(df_concentrated, df_margin[margin_cols], on="symbol", how="left", suffixes=("", "_margin"))
+            if "name_margin" in df_concentrated.columns:
+                df_concentrated["name"] = df_concentrated["name_margin"].fillna(df_concentrated["stock_name"])
+                df_concentrated["stock_name"] = df_concentrated["name"]
+        if not df_dispersed.empty:
+            df_dispersed = pd.merge(df_dispersed, df_margin[margin_cols], on="symbol", how="left", suffixes=("", "_margin"))
+            if "name_margin" in df_dispersed.columns:
+                df_dispersed["name"] = df_dispersed["name_margin"].fillna(df_dispersed["stock_name"])
+                df_dispersed["stock_name"] = df_dispersed["name"]
 
-        # 散戶接刀坑：融資暴增 > 150 張 且 家數差為正 (發散)
-        trap_mask = (m_merged["margin_net"] >= 150) & (m_merged["broker_diff"] > 0)
-        df_trap = m_merged[trap_mask].sort_values(by="margin_net", ascending=False).head(top_n).copy()
-        if not df_trap.empty:
-            df_trap["特徵標籤"] = "🩸 散戶接刀套牢坑 (融資大增+籌碼凌亂散發)"
+        if not df_div.empty:
+            m_merged = pd.merge(df_margin, df_div[["symbol", "broker_diff", "total_amt_yi"]], on="symbol", how="inner")
+            m_merged["stock_name"] = m_merged["name"]
+            m_merged["diff_broker_count"] = m_merged["broker_diff"]
+            # 極品軋空：券資比 > 10% 且 融券增減 > 20 張 且 家數差為負 (集中)
+            sq_mask = (m_merged["short_margin_ratio_pct"] >= 10.0) & (m_merged["short_net"] >= 20) & (m_merged["broker_diff"] < 0)
+            df_squeeze = m_merged[sq_mask].sort_values(by=["short_margin_ratio_pct", "short_net"], ascending=[False, False]).head(top_n).copy()
+            if not df_squeeze.empty:
+                df_squeeze["特徵標籤"] = "🚀 極品軋空候選 (高券資比+融券暴增+大戶收籌)"
+
+            # 散戶接刀坑：融資暴增 > 150 張 且 家數差為正 (發散)
+            trap_mask = (m_merged["margin_net"] >= 150) & (m_merged["broker_diff"] > 0)
+            df_trap = m_merged[trap_mask].sort_values(by="margin_net", ascending=False).head(top_n).copy()
+            if not df_trap.empty:
+                df_trap["特徵標籤"] = "🩸 散戶接刀套牢坑 (融資大增+籌碼凌亂散發)"
+
+    # 2.5 載入當日收盤價補全各表之收盤價與市場別
+    df_close = load_close_data(trade_date, broker_dir)
+    if not df_close.empty:
+        def _attach_close(df_in: pd.DataFrame) -> pd.DataFrame:
+            if df_in.empty:
+                return df_in
+            m = pd.merge(df_in, df_close[["symbol", "close", "market", "name"]], on="symbol", how="left", suffixes=("", "_close"))
+            if "close_close" in m.columns:
+                m["close"] = m["close_close"].fillna(m.get("close", np.nan))
+            if "market_close" in m.columns:
+                m["market"] = m["market_close"].fillna(m.get("market", "上市"))
+            if "name_close" in m.columns:
+                cur_name = m["stock_name"] if "stock_name" in m.columns else m.get("name", "")
+                m["stock_name"] = cur_name.replace("未知", np.nan).fillna(m["name_close"]).fillna(m["symbol"])
+                m["name"] = m["stock_name"]
+            return m
+
+        df_concentrated = _attach_close(df_concentrated)
+        df_dispersed = _attach_close(df_dispersed)
+        df_squeeze = _attach_close(df_squeeze)
+        df_trap = _attach_close(df_trap)
 
     # 3. 集保千張大戶檢驗
     print("[3/4] 比對集保千張大戶鎖碼比例...")
