@@ -100,9 +100,8 @@ def list_gdrive_parquet_files(service, folder_id: str) -> List[Dict[str, Any]]:
 
         files = results.get("files", [])
         for f in files:
-            # 排除非全市場或測試檔 (優先選擇 api_absr1，另支援 close1 收盤價檔)
             name = f.get("name", "")
-            if "absr1" in name or "finmind" in name or "stock" in name or "close1" in name:
+            if name.endswith(".parquet"):
                 f_date = extract_date_from_filename(name)
                 all_files.append({
                     "id": f.get("id"),

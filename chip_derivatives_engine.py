@@ -110,6 +110,22 @@ def load_close_data(trade_date: str, broker_dir: str = "./20260822分點資料")
                     return df[cols].drop_duplicates(subset=["symbol"])
             except Exception:
                 pass
+
+    # 智慧備援：若指定交易日收盤價尚未生成，自動引用最新可用前一交易日 (<= trade_date) 之收盤價數據
+    for d in search_dirs:
+        if not os.path.exists(d):
+            continue
+        cands = sorted(glob.glob(os.path.join(d, "api_close1_*.parquet")), reverse=True)
+        for c in cands:
+            dt_str = os.path.basename(c).replace("api_close1_", "").split("_")[0]
+            if dt_str <= trade_date:
+                try:
+                    df = pd.read_parquet(c)
+                    if not df.empty and "close" in df.columns:
+                        cols = [c_name for c_name in ["symbol", "market", "close", "name"] if c_name in df.columns]
+                        return df[cols].drop_duplicates(subset=["symbol"])
+                except Exception:
+                    pass
     return pd.DataFrame()
 
 
@@ -317,16 +333,21 @@ def run_derivatives_analysis_for_date(
     # 3. 集保千張大戶檢驗
     print("[3/4] 比對集保千張大戶鎖碼比例...")
     df_tdcc = load_tdcc_data(trade_date, tdcc_dirs)
-    if not df_tdcc.empty and not df_concentrated.empty:
-        df_concentrated = pd.merge(
-            df_concentrated,
-            df_tdcc[["symbol", "large_shareholder_pct", "retail_shareholder_pct", "total_shareholders"]],
-            on="symbol",
-            how="left"
-        )
-        df_concentrated["大戶鎖碼等級"] = df_concentrated["large_shareholder_pct"].apply(
-            lambda x: "👑 超高鎖碼 (>70%)" if x >= 70 else ("🔒 穩健鎖碼 (>50%)" if x >= 50 else "一般 (<50%)")
-        )
+    if not df_tdcc.empty:
+        tdcc_cols = [c for c in ["symbol", "large_shareholder_pct", "retail_shareholder_pct", "total_shareholders"] if c in df_tdcc.columns]
+        for df_target in [df_concentrated, df_dispersed, df_squeeze, df_trap]:
+            if not df_target.empty and "symbol" in df_target.columns:
+                existing_drop = [c for c in ["large_shareholder_pct", "retail_shareholder_pct", "total_shareholders", "大戶鎖碼等級"] if c in df_target.columns]
+                if existing_drop:
+                    df_target.drop(columns=existing_drop, inplace=True)
+                merged = pd.merge(df_target, df_tdcc[tdcc_cols], on="symbol", how="left")
+                for c in ["large_shareholder_pct", "retail_shareholder_pct", "total_shareholders"]:
+                    if c in merged.columns:
+                        df_target[c] = merged[c].values
+                if "large_shareholder_pct" in df_target.columns:
+                    df_target["大戶鎖碼等級"] = df_target["large_shareholder_pct"].apply(
+                        lambda x: "👑 超高鎖碼 (>70%)" if pd.notna(x) and x >= 70 else ("🔒 穩健鎖碼 (>50%)" if pd.notna(x) and x >= 50 else "一般 (<50%)")
+                    )
 
     # 4. 大盤期權避震雷達
     print("[4/4] 提取期交所微觀期貨指標...")
