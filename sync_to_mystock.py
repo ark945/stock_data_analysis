@@ -44,7 +44,7 @@ def extract_date_from_filename(fname: str) -> str:
 
 
 def find_local_files(data_dir: str):
-    search_dirs = [data_dir, "./temp_cache_parquet", "./cloud_data", "./20260822分點資料"]
+    search_dirs = [data_dir, "./temp_cache_parquet", "./temp_cache_close", "./cloud_data", "./20260822分點資料"]
     parquet_files = []
     close_files_all = []
     for d in search_dirs:
@@ -150,7 +150,8 @@ def upsert_to_supabase(
 
 def prepare_chip_payloads(
     data_dir: str,
-    target_date: Optional[str] = None
+    target_date: Optional[str] = None,
+    precomputed_vwap_df: Optional[pd.DataFrame] = None
 ) -> Dict[str, Any]:
     """執行全套量化運算並組裝符合 Supabase Schema 的 Payload"""
     absr1_files, close_files_all = find_local_files(data_dir)
@@ -333,10 +334,14 @@ def prepare_chip_payloads(
 
     # 4. 執行尾盤放量 VWAP 歸因
     print("[4/4] 運算尾盤放量站上 VWAP 與主力分點逆向歸因...")
-    df_vwap = scan_tail_vwap_and_attribute(
-        data_dir=data_dir,
-        target_date=actual_date
-    )
+    if precomputed_vwap_df is not None and not precomputed_vwap_df.empty:
+        df_vwap = precomputed_vwap_df
+        print(f"[✓] 重用預先計算之尾盤 VWAP 歸因成果 ({len(df_vwap)} 筆)，避免重複運算與檔案定位落差。")
+    else:
+        df_vwap = scan_tail_vwap_and_attribute(
+            data_dir=data_dir,
+            target_date=actual_date
+        )
     vwap_rows = []
     if not df_vwap.empty:
         for _, r in df_vwap.iterrows():
@@ -472,10 +477,14 @@ def prepare_chip_payloads(
     return payload
 
 
-def purge_date_from_supabase(supabase_url: str, supabase_key: str, target_date: str) -> bool:
-    """在同步前無條件刪除目標交易日之所有舊紀錄，確保全新乾淨寫入不殘留"""
-    print(f"[*] 執行【無條件刪除】：正在清空 {target_date} 於 Supabase 之所有舊資料...")
-    tables = [
+def purge_date_from_supabase(
+    supabase_url: str,
+    supabase_key: str,
+    target_date: str,
+    tables: Optional[List[str]] = None
+) -> bool:
+    """在同步前選擇性刪除目標交易日之舊紀錄，確保全新乾淨寫入不殘留"""
+    all_tables = [
         "daily_chip_summary",
         "chip_accumulation_signals",
         "chip_exit_signals",
@@ -483,12 +492,14 @@ def purge_date_from_supabase(supabase_url: str, supabase_key: str, target_date: 
         "vwap_attribution_signals",
         "chip_derivatives_signals"
     ]
+    target_tables = tables if tables is not None else all_tables
+    print(f"[*] 執行【安全清空】：正在清空 {target_date} 於 Supabase 之指定資料表 ({', '.join(target_tables)})...")
     headers = {
         "apikey": supabase_key,
         "Authorization": f"Bearer {supabase_key}"
     }
-    for table in tables:
-        url = f"{supabase_url}/rest/v1/{table}?trade_date=eq.{target_date}"
+    for table in target_tables:
+        url = f"{supabase_url.rstrip('/')}/rest/v1/{table}?trade_date=eq.{target_date}"
         try:
             req = urllib.request.Request(url, headers=headers, method="DELETE")
             ctx = ssl.create_default_context()
@@ -498,12 +509,12 @@ def purge_date_from_supabase(supabase_url: str, supabase_key: str, target_date: 
                 pass
         except Exception as e:
             print(f"[!] 清除 {table} ({target_date}) 舊資料提示: {e}")
-    print(f"[✓] {target_date} 舊資料已完全清空，準備寫入全新計算結果！")
+    print(f"[✓] {target_date} 指定資料表舊資料已清空，準備寫入全新計算結果！")
     return True
 
 
 def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase_key: str, dry_run: bool = False) -> bool:
-    """同步單一交易日 (寫入前無條件清空當天舊資料)"""
+    """同步單一交易日 (實施表層級防呆安全覆蓋，零筆資料嚴格禁止清空線上資料)"""
     payload = prepare_chip_payloads(data_dir, target_date)
     actual_date = payload["trade_date"]
 
@@ -517,17 +528,23 @@ def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase
     if dry_run or not (supabase_url and supabase_key):
         return True
 
-    # 無條件刪除當天舊資料，確保零重複、零殘留
-    purge_date_from_supabase(supabase_url, supabase_key, actual_date)
+    # 表層級精準同步防護：只有產出筆數 > 0 時才執行清空舊資料並 Upsert，避免 0 筆抹除線上健康資料
+    table_mappings = [
+        ("daily_chip_summary", [payload["daily_chip_summary"]] if payload.get("daily_chip_summary") else [], "trade_date"),
+        ("chip_accumulation_signals", payload.get("chip_accumulation_signals", []), "trade_date,period_days,symbol,broker_name"),
+        ("chip_exit_signals", payload.get("chip_exit_signals", []), "trade_date,exit_type,symbol,dump_broker_name"),
+        ("broker_institution_ranks", payload.get("broker_institution_ranks", []), "trade_date,category,broker_name,symbol"),
+        ("vwap_attribution_signals", payload.get("vwap_attribution_signals", []), "trade_date,symbol,broker_name"),
+        ("chip_derivatives_signals", payload.get("chip_derivatives_signals", []), "trade_date,signal_type,symbol"),
+    ]
 
     success = True
-    success &= upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "chip_accumulation_signals", payload["chip_accumulation_signals"], on_conflict="trade_date,period_days,symbol,broker_name")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
-    success &= upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
-    if payload.get("chip_derivatives_signals"):
-        success &= upsert_to_supabase(supabase_url, supabase_key, "chip_derivatives_signals", payload["chip_derivatives_signals"], on_conflict="trade_date,signal_type,symbol")
+    for tbl, rows, on_conf in table_mappings:
+        if rows:
+            purge_date_from_supabase(supabase_url, supabase_key, actual_date, tables=[tbl])
+            success &= upsert_to_supabase(supabase_url, supabase_key, tbl, rows, on_conflict=on_conf)
+        else:
+            print(f"[*] 防呆保護：表 {tbl} 本次產出 0 筆，保留線上既有資料，拒絕盲刪！")
 
     return success
 

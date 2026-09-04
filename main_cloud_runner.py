@@ -296,16 +296,25 @@ def main():
         try:
             from sync_to_mystock import prepare_chip_payloads, upsert_to_supabase, purge_date_from_supabase
             target_data_dir = args.local_dir if args.local_dir and os.path.exists(args.local_dir) else "./temp_cache_parquet"
-            # 無條件刪除目標交易日之舊資料，確保全新乾淨寫入不殘留
-            purge_date_from_supabase(supabase_url, supabase_key, latest_date)
-            payload = prepare_chip_payloads(target_data_dir, latest_date)
-            upsert_to_supabase(supabase_url, supabase_key, "daily_chip_summary", payload["daily_chip_summary"], on_conflict="trade_date")
-            upsert_to_supabase(supabase_url, supabase_key, "chip_accumulation_signals", payload["chip_accumulation_signals"], on_conflict="trade_date,period_days,symbol,broker_name")
-            upsert_to_supabase(supabase_url, supabase_key, "chip_exit_signals", payload["chip_exit_signals"], on_conflict="trade_date,exit_type,symbol,dump_broker_name")
-            upsert_to_supabase(supabase_url, supabase_key, "broker_institution_ranks", payload["broker_institution_ranks"], on_conflict="trade_date,category,broker_name,symbol")
-            upsert_to_supabase(supabase_url, supabase_key, "vwap_attribution_signals", payload["vwap_attribution_signals"], on_conflict="trade_date,symbol,broker_name")
-            if payload.get("chip_derivatives_signals"):
-                upsert_to_supabase(supabase_url, supabase_key, "chip_derivatives_signals", payload["chip_derivatives_signals"], on_conflict="trade_date,signal_type,symbol")
+            # 傳入前半段已驗證算好的 tail_vwap_df，杜絕重複運算與檔案搜尋落差
+            payload = prepare_chip_payloads(target_data_dir, latest_date, precomputed_vwap_df=tail_vwap_df)
+            
+            table_mappings = [
+                ("daily_chip_summary", [payload["daily_chip_summary"]] if payload.get("daily_chip_summary") else [], "trade_date"),
+                ("chip_accumulation_signals", payload.get("chip_accumulation_signals", []), "trade_date,period_days,symbol,broker_name"),
+                ("chip_exit_signals", payload.get("chip_exit_signals", []), "trade_date,exit_type,symbol,dump_broker_name"),
+                ("broker_institution_ranks", payload.get("broker_institution_ranks", []), "trade_date,category,broker_name,symbol"),
+                ("vwap_attribution_signals", payload.get("vwap_attribution_signals", []), "trade_date,symbol,broker_name"),
+                ("chip_derivatives_signals", payload.get("chip_derivatives_signals", []), "trade_date,signal_type,symbol"),
+            ]
+            
+            for tbl, rows, on_conf in table_mappings:
+                if rows:
+                    purge_date_from_supabase(supabase_url, supabase_key, latest_date, tables=[tbl])
+                    upsert_to_supabase(supabase_url, supabase_key, tbl, rows, on_conflict=on_conf)
+                else:
+                    print(f"[*] 防呆保護：表 {tbl} 本次產出 0 筆，保留線上既有資料，拒絕盲刪！")
+
             has_synced_mystock = True
             print("[✓] 成功同步最新主力情報至 myStock 雲端戰情室！")
         except Exception as e:
