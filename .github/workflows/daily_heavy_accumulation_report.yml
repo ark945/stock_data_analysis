@@ -26,6 +26,9 @@ on:
         required: false
         default: false
 
+  repository_dispatch:
+    types: [trigger-daily-report, run-daily-report]
+
 jobs:
   run-daily-report:
     name: 執行主力籌碼分析並同步戰情室

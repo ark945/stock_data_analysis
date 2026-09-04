@@ -101,9 +101,29 @@ curl -X POST https://api.github.com/repos/ark945/stock_data_analysis/actions/wor
 
 ---
 
-## 📅 排程建議時間對照表
+## 📅 排程建議時間對照表 (完整 5 大核心排程)
 
-| 專案 | 建議觸發時間 (台灣時間) | 說明 |
-| :--- | :--- | :--- |
-| **爬蟲專案 (`stock_data_downloader`)** | `17:35` (主要) / `05:31` (備援) | 下午盤後自動爬取全市場分點買賣日報 |
-| **分析專案 (`stock_data_analysis`)** | `20:07` 或 `20:15` | 等待爬蟲檔案就緒後，進行主力重押模型運算並派發 Email 報表 |
+| 專案 | 任務類型 | 建議觸發時間 (台灣時間) | 說明與效益 |
+| :--- | :--- | :--- | :--- |
+| **爬蟲專案 (`stock_data_downloader`)** | ① 平日全市場分點爬蟲 | 每週一至週五 `17:35` | 盤後自動爬取 TWSE + TPEx 全市場分點買賣日報並上傳 GDrive |
+| **爬蟲專案 (`stock_data_downloader`)** | ② 清晨備援補抓 | 每週二至週六 `05:31` | 自動檢查若前一日有漏網股票則進行二次補抓 |
+| **爬蟲專案 (`stock_data_downloader`)** | ③ 週六集保大戶分散表 | 每週六 `09:30` | 官方通常於 08:30~09:00 發布當週資料，秒級自動下載並上傳 GDrive |
+| **分析專案 (`stock_data_analysis`)** | ④ 平日主力重押日報 | 每週一至週五 `20:05` | 計算 4 週期主力吸籌、出貨雷達、同步 Supabase 並寄發 Email |
+| **分析專案 (`stock_data_analysis`)** | ⑤ 週末特刊 / 看板同步 | 每週六 `10:00` | 讀取最新集保數據，重算千張大戶持股%與週增減，全面更新 myStock 戰情室 |
+
+### 💡 週六任務 ⑤ 的 Request Body 設定說明
+在 Cron-job.org 建立週六 10:00 的分析任務時：
+- **目標 URL**：`https://api.github.com/repos/ark945/stock_data_analysis/actions/workflows/daily_heavy_accumulation_report.yml/dispatches`
+- **Method**：`POST`
+- **Headers**：填入前述 4 條（含 GitHub PAT Token）
+- **Request Body (JSON)**：
+  ```json
+  {
+    "ref": "main",
+    "inputs": {
+      "target_date": "",
+      "send_email": "false"
+    }
+  }
+  ```
+  *(說明：傳入 `"send_email": "false"` 可以在週末「靜默更新」myStock 戰情室與 Supabase，不重複寄信打擾收件者；若希望週六早上收到 Email 週末總盤點，將其改為 `"true"` 即可)*
