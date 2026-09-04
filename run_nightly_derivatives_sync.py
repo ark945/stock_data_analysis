@@ -185,17 +185,21 @@ def run_nightly_derivatives_sync(target_date: Optional[str] = None, data_dir: Op
             )
             print(f"[✓] 成功同步 {len(clean_rows)} 筆衍生指標至 Supabase (chip_derivatives_signals)！")
 
-            # 5. 若當日融資券就緒，順帶更新 chip_accumulation_signals 的券資比 short_margin_ratio_pct
-            margin_file = os.path.join("./output_margin", f"api_margin_{actual_date}_{actual_date}.parquet")
-            if not os.path.exists(margin_file):
-                margin_file = os.path.join(broker_dir, f"api_margin_{actual_date}_{actual_date}.parquet")
-            if os.path.exists(margin_file):
+            # 5. 若融資券就緒，順帶更新 chip_accumulation_signals 的券資比 short_margin_ratio_pct
+            from chip_derivatives_engine import load_margin_data
+            margin_dirs = [
+                "./output_margin",
+                broker_dir,
+                r"d:\MyProject\stock_data_downloader\output_margin",
+                "../stock_data_downloader/output_margin",
+            ]
+            mdf = load_margin_data(actual_date, margin_dirs)
+            if not mdf.empty:
                 try:
-                    mdf = pd.read_parquet(margin_file)
                     margin_map = {str(r["symbol"]): float(r.get("short_margin_ratio_pct", 0) or 0) for _, r in mdf.iterrows()}
-                    # 查詢當日已存在的吸籌訊號
+                    # 查詢當日已存在的吸籌訊號 (查詢所有欄位，全欄位更新避免 not-null constraint)
                     import urllib.request
-                    query_url = f"{supabase_url.rstrip('/')}/rest/v1/chip_accumulation_signals?trade_date=eq.{actual_date}&select=trade_date,period_days,symbol,broker_name"
+                    query_url = f"{supabase_url.rstrip('/')}/rest/v1/chip_accumulation_signals?trade_date=eq.{actual_date}&select=*"
                     q_headers = {"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"}
                     q_req = urllib.request.Request(query_url, headers=q_headers)
                     with urllib.request.urlopen(q_req, timeout=10) as resp:
@@ -203,24 +207,20 @@ def run_nightly_derivatives_sync(target_date: Optional[str] = None, data_dir: Op
                     if accum_data:
                         update_payload = []
                         for row in accum_data:
-                            sym = row["symbol"]
+                            sym = str(row.get("symbol", ""))
                             if sym in margin_map:
-                                update_payload.append({
-                                    "trade_date": actual_date,
-                                    "period_days": row["period_days"],
-                                    "symbol": sym,
-                                    "broker_name": row["broker_name"],
-                                    "short_margin_ratio_pct": margin_map[sym]
-                                })
+                                row["short_margin_ratio_pct"] = margin_map[sym]
+                                update_payload.append(row)
                         if update_payload:
+                            clean_payload = clean_nan_and_inf(update_payload)
                             upsert_to_supabase(
                                 supabase_url,
                                 supabase_key,
                                 "chip_accumulation_signals",
-                                update_payload,
+                                clean_payload,
                                 on_conflict="trade_date,period_days,symbol,broker_name"
                             )
-                            print(f"[✓] 成功對齊並更新 {len(update_payload)} 筆吸籌卡片最新券資比！")
+                            print(f"[✓] 成功對齊並更新 {len(clean_payload)} 筆吸籌卡片最新券資比！")
                 except Exception as _m_err:
                     print(f"[!] 吸籌卡片券資比對齊提示: {_m_err}")
         else:

@@ -189,18 +189,22 @@ def prepare_chip_payloads(
     print("=" * 65)
     print(f"[*] 正在從量化核心提取全市場籌碼情報 (基準交易日: {actual_date})")
     
-    # 預加載融資券與集保大戶資料以附加指標
-    margin_file = os.path.join(data_dir, f"api_margin_{actual_date}_{actual_date}.parquet")
-    if not os.path.exists(margin_file):
-        margin_file = os.path.join(os.path.dirname(__file__), "output_margin", f"api_margin_{actual_date}_{actual_date}.parquet")
+    # 預加載融資券與集保大戶資料以附加指標 (支援多目錄檢索與前一交易日智慧回溯)
+    margin_dirs = [
+        data_dir,
+        os.path.join(os.path.dirname(__file__), "output_margin"),
+        r"d:\MyProject\stock_data_downloader\output_margin",
+        "../stock_data_downloader/output_margin",
+        "./temp_cache_parquet",
+        "./output_margin"
+    ]
+    from chip_derivatives_engine import load_margin_data
+    mdf = load_margin_data(actual_date, margin_dirs)
     margin_map = {}
-    if os.path.exists(margin_file):
-        try:
-            mdf = pd.read_parquet(margin_file)
-            for _, mr in mdf.iterrows():
-                margin_map[str(mr["symbol"])] = float(mr.get("short_margin_ratio_pct", 0) or 0)
-        except Exception as _e:
-            pass
+    if not mdf.empty:
+        for _, mr in mdf.iterrows():
+            if pd.notna(mr.get("short_margin_ratio_pct")):
+                margin_map[str(mr["symbol"])] = float(mr["short_margin_ratio_pct"])
 
     tdcc_files = sorted(glob.glob(os.path.join(data_dir, "api_tdcc_*.parquet")))
     tdcc_map = {}
