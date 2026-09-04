@@ -47,13 +47,13 @@ def download_minimal_derivatives_files(target_date: str) -> bool:
     try:
         from cloud_gdrive_downloader import (
             download_recent_parquet_files,
-            download_recent_close_files,
+            download_recent_close_price_files,
             download_recent_files_by_pattern
         )
         # 1. 當日分點
         download_recent_parquet_files(lookback_days=1, dest_dir="./temp_cache_parquet")
         # 2. 當日收盤價
-        download_recent_close_files(lookback_days=1, dest_dir="./temp_cache_close")
+        download_recent_close_price_files(lookback_days=1, dest_dir="./temp_cache_close")
         # 3. 當日融資融券
         download_recent_files_by_pattern("margin", lookback_days=1, dest_dir="./output_margin")
         # 4. 當日期交所期權
@@ -99,6 +99,8 @@ def run_nightly_derivatives_sync(target_date: Optional[str] = None, data_dir: Op
 
     # 3. 組合 Supabase chip_derivatives_signals 格式
     stock_name_cache = get_stock_name_map()
+    from find_similar_cases import get_stock_market_map
+    stock_market_cache = get_stock_market_map()
     deriv_rows = []
 
     def _parse_deriv_row(r, sig_type, default_tag, default_guide):
@@ -107,13 +109,19 @@ def run_nightly_derivatives_sync(target_date: Optional[str] = None, data_dir: Op
         if not name or name == "未知":
             name = stock_name_cache.get(sym, sym)
 
-        raw_market = str(r.get("market") or "上市")
-        if "TWSE" in raw_market.upper() or "上市" in raw_market:
-            market = "上市"
-        elif "TPEX" in raw_market.upper() or "上櫃" in raw_market:
-            market = "上櫃"
+        raw_market = r.get("market")
+        if pd.isna(raw_market) or not raw_market or str(raw_market).lower() in ["nan", "none", "null", ""]:
+            market = stock_market_cache.get(sym, "上櫃" if (len(sym) == 4 and sym.startswith(("4", "5", "6", "7", "8"))) else "上市")
         else:
-            market = raw_market
+            raw_str = str(raw_market)
+            if "TWSE" in raw_str.upper() or "上市" in raw_str:
+                market = "上市"
+            elif "TPEX" in raw_str.upper() or "上櫃" in raw_str:
+                market = "上櫃"
+            elif "興櫃" in raw_str:
+                market = "興櫃"
+            else:
+                market = stock_market_cache.get(sym, raw_str)
 
         close_val = float(r["close"]) if pd.notna(r.get("close")) else (float(r["close_price"]) if pd.notna(r.get("close_price")) else None)
         short_ratio = float(r["short_margin_ratio_pct"]) if pd.notna(r.get("short_margin_ratio_pct")) else None

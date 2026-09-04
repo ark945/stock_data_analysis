@@ -84,7 +84,19 @@ def calc_broker_divergence(trade_date: str, broker_file: str, min_sheets: float 
 
 def load_close_data(trade_date: str, broker_dir: str = "./20260822分點資料") -> pd.DataFrame:
     """讀取指定交易日之收盤價 Parquet 檔以取得最新收盤價與市場別"""
-    for d in [broker_dir, "./temp_cache_parquet", "./cloud_data"]:
+    search_dirs = [
+        "./temp_cache_close",
+        "./cloud_data_close",
+        broker_dir,
+        "./temp_cache_parquet",
+        "./cloud_data",
+        "./output",
+        "../stock_data_downloader/downloads",
+        "../stock_data_downloader/output"
+    ]
+    for d in search_dirs:
+        if not os.path.exists(d):
+            continue
         p = os.path.join(d, f"api_close1_{trade_date}_{trade_date}.parquet")
         if not os.path.exists(p):
             cands = glob.glob(os.path.join(d, f"api_close1_*{trade_date}*.parquet"))
@@ -94,7 +106,8 @@ def load_close_data(trade_date: str, broker_dir: str = "./20260822分點資料")
             try:
                 df = pd.read_parquet(p)
                 if not df.empty:
-                    return df[["symbol", "market", "close", "name"]].drop_duplicates(subset=["symbol"])
+                    cols = [c for c in ["symbol", "market", "close", "name"] if c in df.columns]
+                    return df[cols].drop_duplicates(subset=["symbol"])
             except Exception:
                 pass
     return pd.DataFrame()
@@ -286,6 +299,20 @@ def run_derivatives_analysis_for_date(
         df_dispersed = _attach_close(df_dispersed)
         df_squeeze = _attach_close(df_squeeze)
         df_trap = _attach_close(df_trap)
+
+    # 2.6 使用全市場對照表補全任何仍為空值的市場別 (杜絕 nan 標籤)
+    try:
+        from find_similar_cases import get_stock_market_map
+        all_market_map = get_stock_market_map()
+        for df_target in [df_concentrated, df_dispersed, df_squeeze, df_trap]:
+            if not df_target.empty:
+                if "market" not in df_target.columns:
+                    df_target["market"] = df_target["symbol"].map(all_market_map).fillna("上市")
+                else:
+                    df_target["market"] = df_target["market"].fillna(df_target["symbol"].map(all_market_map)).fillna("上市")
+                    df_target["market"] = df_target["market"].replace({"nan": "上櫃", "None": "上櫃", np.nan: "上櫃"})
+    except Exception:
+        pass
 
     # 3. 集保千張大戶檢驗
     print("[3/4] 比對集保千張大戶鎖碼比例...")

@@ -397,13 +397,21 @@ def prepare_chip_payloads(
             if not name or name == "未知":
                 name = stock_name_cache.get(sym, sym)
             
-            raw_market = str(r.get("market") or "上市")
-            if "TWSE" in raw_market.upper() or "上市" in raw_market:
-                market = "上市"
-            elif "TPEX" in raw_market.upper() or "上櫃" in raw_market:
-                market = "上櫃"
+            raw_market = r.get("market")
+            if pd.isna(raw_market) or not raw_market or str(raw_market).lower() in ["nan", "none", "null", ""]:
+                from find_similar_cases import get_stock_market_map
+                market = get_stock_market_map().get(sym, "上櫃" if (len(sym) == 4 and sym.startswith(("4", "5", "6", "7", "8"))) else "上市")
             else:
-                market = raw_market
+                raw_str = str(raw_market)
+                if "TWSE" in raw_str.upper() or "上市" in raw_str:
+                    market = "上市"
+                elif "TPEX" in raw_str.upper() or "上櫃" in raw_str:
+                    market = "上櫃"
+                elif "興櫃" in raw_str:
+                    market = "興櫃"
+                else:
+                    from find_similar_cases import get_stock_market_map
+                    market = get_stock_market_map().get(sym, raw_str)
 
             close_val = float(r["close"]) if pd.notna(r.get("close")) else (float(r["close_price"]) if pd.notna(r.get("close_price")) else None)
             short_ratio = float(r["short_margin_ratio_pct"]) if pd.notna(r.get("short_margin_ratio_pct")) else None
