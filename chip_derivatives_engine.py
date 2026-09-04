@@ -101,7 +101,7 @@ def load_close_data(trade_date: str, broker_dir: str = "./20260822分點資料")
 
 
 def load_margin_data(trade_date: str, margin_dirs: List[str]) -> pd.DataFrame:
-    """讀取指定交易日之融資融券 Parquet"""
+    """讀取指定交易日之融資融券 Parquet，若當日官方尚未公布 (通常每晚 21:30~22:00 公布)，智慧回溯引用最近前一交易日數據"""
     filename = f"api_margin_{trade_date}_{trade_date}.parquet"
     for d in margin_dirs:
         p = os.path.join(d, filename)
@@ -110,6 +110,19 @@ def load_margin_data(trade_date: str, margin_dirs: List[str]) -> pd.DataFrame:
                 return pd.read_parquet(p)
             except Exception as e:
                 print(f"[!] 讀取融資券失敗 ({p}): {e}")
+    # 智慧備援：若當日資券尚未公布，自動引用最新前一交易日 (<= trade_date) 之融資券
+    for d in margin_dirs:
+        cands = sorted(glob.glob(os.path.join(d, "api_margin_*.parquet")), reverse=True)
+        for c in cands:
+            dt_str = os.path.basename(c).replace("api_margin_", "").split("_")[0]
+            if dt_str <= trade_date:
+                try:
+                    df = pd.read_parquet(c)
+                    if not df.empty:
+                        print(f"[*] 提示：{trade_date} 當日融資券官方尚未結算公布，已智慧引用最新基準日 ({dt_str}) 之融資融券數據")
+                        return df
+                except Exception:
+                    pass
     return pd.DataFrame()
 
 
