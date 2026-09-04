@@ -441,7 +441,7 @@ def generate_multi_period_html_report(
     report_title: str = "台股主力四週期連續重押吸籌雷達日報",
     top_display_n: int = 15,
     extra_sections_html: str = "",
-    source_tag: str = "【雲端抓檔】"
+    source_tag: str = "【雲端】"
 ) -> str:
     """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (預設精選 TOP N，以控制郵件長度)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")

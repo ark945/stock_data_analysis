@@ -309,16 +309,16 @@ def main():
         except Exception as e:
             print(f"[!] myStock 同步過程發生非致命異常: {e}")
 
-    # 6. 判定資料來源 (本機抓檔 vs 雲端抓檔)
+    # 6. 判定資料來源 (本機 vs 雲端)
     is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
     if args.local_dir:
-        source_tag = "【本機抓檔】"
+        source_tag = "【本機】"
         source_desc = f"本機目錄 ({args.local_dir})"
     elif is_gh:
-        source_tag = "【雲端抓檔】"
+        source_tag = "【雲端】"
         source_desc = "雲端 GitHub Actions (Google Drive)"
     else:
-        source_tag = "【雲端抓檔】"
+        source_tag = "【雲端】"
         source_desc = "本機端下載雲端 Google Drive"
 
     # 重新渲染含來源標記之 HTML 報表

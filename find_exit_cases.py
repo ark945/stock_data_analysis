@@ -338,7 +338,7 @@ def main():
             html_content = build_exit_report_html(df_top, args.long_days, args.recent_days)
             today_str = time.strftime("%Y-%m-%d")
             is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
-            source_tag = "【雲端抓檔】" if is_gh else "【本機抓檔】"
+            source_tag = "【雲端】" if is_gh else "【本機】"
             subject = f"🚨 {source_tag} 台股主力出貨/逃離雷達日報 ({today_str}) | 共 {len(df_top)} 組大戶下車案例"
             recipients = [args.email_to] if args.email_to else None
             send_email_report(subject, html_content, recipients=recipients, attachment_paths=[out_path])
