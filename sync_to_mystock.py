@@ -44,7 +44,15 @@ def extract_date_from_filename(fname: str) -> str:
 
 
 def find_local_files(data_dir: str):
-    search_dirs = [data_dir, "./temp_cache_parquet", "./temp_cache_close", "./cloud_data", "./20260822分點資料"]
+    search_dirs = [
+        data_dir,
+        "../stock_data_downloader/output",
+        "../stock_data_downloader/downloads",
+        "./temp_cache_parquet",
+        "./temp_cache_close",
+        "./cloud_data",
+        "./20260822分點資料"
+    ]
     parquet_files = []
     close_files_all = []
     for d in search_dirs:
@@ -55,8 +63,21 @@ def find_local_files(data_dir: str):
         f for f in parquet_files 
         if "api_absr1_" in os.path.basename(f).lower()
     ]
-    absr1_files = sorted(list(set(absr1_files)), key=lambda x: extract_date_from_filename(os.path.basename(x)))
-    close_files_all = sorted(list(set(close_files_all)), key=lambda x: extract_date_from_filename(os.path.basename(x)))
+    # 按日期精準去重（每個交易日只保留一個最完整的分點檔案）
+    unique_absr1 = {}
+    for f in absr1_files:
+        dt = extract_date_from_filename(os.path.basename(f))
+        if dt not in unique_absr1 or os.path.getsize(f) > os.path.getsize(unique_absr1[dt]):
+            unique_absr1[dt] = f
+    absr1_files = [unique_absr1[k] for k in sorted(unique_absr1.keys())]
+
+    unique_close = {}
+    for f in close_files_all:
+        dt = extract_date_from_filename(os.path.basename(f))
+        if dt not in unique_close or os.path.getsize(f) > os.path.getsize(unique_close[dt]):
+            unique_close[dt] = f
+    close_files_all = [unique_close[k] for k in sorted(unique_close.keys())]
+
     return absr1_files, close_files_all
 
 # 嘗試載入 .env
@@ -536,9 +557,15 @@ def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase
     if dry_run or not (supabase_url and supabase_key):
         return True
 
+    summary_data = payload.get("daily_chip_summary", [])
+    if isinstance(summary_data, dict):
+        summary_data = [summary_data]
+    elif not isinstance(summary_data, list):
+        summary_data = []
+
     # 表層級精準同步防護：只有產出筆數 > 0 時才執行清空舊資料並 Upsert，避免 0 筆抹除線上健康資料
     table_mappings = [
-        ("daily_chip_summary", [payload["daily_chip_summary"]] if payload.get("daily_chip_summary") else [], "trade_date"),
+        ("daily_chip_summary", summary_data, "trade_date"),
         ("chip_accumulation_signals", payload.get("chip_accumulation_signals", []), "trade_date,period_days,symbol,broker_name"),
         ("chip_exit_signals", payload.get("chip_exit_signals", []), "trade_date,exit_type,symbol,dump_broker_name"),
         ("broker_institution_ranks", payload.get("broker_institution_ranks", []), "trade_date,category,broker_name,symbol"),
