@@ -150,12 +150,19 @@ def download_recent_parquet_files(
         print(f"[!] Google Drive 資料夾內未找到符合條件的 Parquet 檔案。")
         return []
 
-    print(f"[✓] 成功檢索到 {len(files)} 個 Parquet 檔案，最新日期: {files[0]['date']}")
+    # 嚴格只挑選券商分點檔案 (api_absr1)，排除 close1、margin、taifex、tdcc 等輔助檔案，避免按日期去重時排擠分點檔案
+    broker_files = [
+        f for f in files 
+        if "absr1" in f["name"] and "close1" not in f["name"] and "margin" not in f["name"] and "taifex" not in f["name"] and "tdcc" not in f["name"]
+    ]
+    if not broker_files:
+        # 若無明確 absr1，退回排除 close1 的候選清單
+        broker_files = [f for f in files if "close1" not in f["name"]]
 
-    # 取最近 N 個不重複日期的檔案
+    # 取最近 N 個不重複日期的分點檔案
     seen_dates = set()
     target_files = []
-    for f in files:
+    for f in broker_files:
         if f["date"] not in seen_dates:
             seen_dates.add(f["date"])
             target_files.append(f)
