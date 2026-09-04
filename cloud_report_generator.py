@@ -440,7 +440,8 @@ def generate_multi_period_html_report(
     latest_date: str = "",
     report_title: str = "台股主力四週期連續重押吸籌雷達日報",
     top_display_n: int = 15,
-    extra_sections_html: str = ""
+    extra_sections_html: str = "",
+    source_tag: str = "【雲端抓檔】"
 ) -> str:
     """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (預設精選 TOP N，以控制郵件長度)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -517,8 +518,9 @@ def generate_multi_period_html_report(
                 <span style="background-color: #3b82f6; color: #ffffff; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 16px; letter-spacing: 0.5px;">
                     MULTI-PERIOD QUANT RADAR
                 </span>
+                <span style="background-color: #0284c7; color: #ffffff; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 16px; margin-left: 6px;">{source_tag}</span>
                 <h1 style="margin: 10px 0 6px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">
-                    🚀 {report_title} ({latest_date})
+                    🚀 {source_tag} {report_title} ({latest_date})
                 </h1>
                 <p style="margin: 0; font-size: 13px; color: #94a3b8;">
                     四維度同步掃描：近 5 日短線點火 ＋ 近 10 日雙週波段 ＋ 近 20 日月波段認養 (川湖模型) ＋ 近 60 日季線大戶鎖碼

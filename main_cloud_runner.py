@@ -309,11 +309,33 @@ def main():
         except Exception as e:
             print(f"[!] myStock 同步過程發生非致命異常: {e}")
 
-    # 6. 發送 Email 與 Telegram 推播
+    # 6. 判定資料來源 (本機抓檔 vs 雲端抓檔)
+    is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
+    if args.local_dir:
+        source_tag = "【本機抓檔】"
+        source_desc = f"本機目錄 ({args.local_dir})"
+    elif is_gh:
+        source_tag = "【雲端抓檔】"
+        source_desc = "雲端 GitHub Actions (Google Drive)"
+    else:
+        source_tag = "【雲端抓檔】"
+        source_desc = "本機端下載雲端 Google Drive"
+
+    # 重新渲染含來源標記之 HTML 報表
+    html_content = generate_multi_period_html_report(
+        reports_dict=reports_dict,
+        latest_date=latest_date,
+        report_title=report_title,
+        top_display_n=15,
+        extra_sections_html=intelligence_html,
+        source_tag=source_tag
+    )
+
+    # 發送 Email 與 Telegram 推播
     if args.no_email:
         print("[*] 依參數設定 (--no-email)，跳過郵件寄送。")
     else:
-        email_subject = f"🚀 {report_title} ({latest_date}) | 5日短線 ＋ 10日雙週波段 ＋ 20日月波段 ＋ 60日季大戶"
+        email_subject = f"🚀 {source_tag} {report_title} ({latest_date}) | 5日短線 ＋ 10日雙週波段 ＋ 20日月波段 ＋ 60日季大戶"
         success = send_email_report(
             subject=email_subject,
             html_content=html_content,
@@ -328,7 +350,8 @@ def main():
         mystock_link = "\n👉 [點此在手機開啟 myStock 戰情室](https://ark945-mystock.hf.space)" if has_synced_mystock else ""
 
         tg_msg = (
-            f"🚀 *{report_title} ({latest_date})*\n"
+            f"🚀 *{source_tag} {report_title} ({latest_date})*\n"
+            f"📂 *資料來源*：`{source_tag}` ({source_desc})\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🔥 *近 5 日短線點火*：`{len(df_5d)} 檔`\n"
             f"🔥 *近 10 日雙週波段追擊*：`{len(df_10d)} 檔`\n"

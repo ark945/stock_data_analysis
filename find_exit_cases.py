@@ -272,10 +272,10 @@ def main():
     parser.add_argument("--long-days", type=int, default=60, help="長期基期窗口天數 (預設 60 日，用來確認曾經是真主力)")
     parser.add_argument("--recent-days", type=int, default=5, help="近期偵測窗口天數 (預設 5 日，用來偵測翻臉出貨)")
     parser.add_argument("--min-long-amt", type=float, default=0.5, help="長期基期最小淨買超金額 (億元，預設 0.5 億)")
-    parser.add_argument("--min-long-ratio", type=float, default=70.0, help="長期基期最小買進佔比 (百分比，預設 70%)")
+    parser.add_argument("--min-long-ratio", type=float, default=70.0, help="長期基期最小買進佔比 (百分比，預設 70%%)")
     parser.add_argument("--min-recent-amt", type=float, default=0.3, help="近期最小淨賣超金額 (億元，預設 0.3 億)")
-    parser.add_argument("--min-recent-ratio", type=float, default=60.0, help="近期最小賣出佔比 (百分比，預設 60%)")
-    parser.add_argument("--ignition-ratio", type=float, default=0.20, help="原吸籌起日偵測門檻比例 (預設 0.20 即 20%，方法同 find_similar_cases.py)")
+    parser.add_argument("--min-recent-ratio", type=float, default=60.0, help="近期最小賣出佔比 (百分比，預設 60%%)")
+    parser.add_argument("--ignition-ratio", type=float, default=0.20, help="原吸籌起日偵測門檻比例 (預設 0.20 即 20%%，方法同 find_similar_cases.py)")
     parser.add_argument("--sort", type=str, default="severity", choices=["severity", "amt"], help="排序方式: severity (出貨危險評分優先，預設) 或 amt (近期賣超金額優先)")
     parser.add_argument("--symbol", type=str, default=None, help="指定查詢特定股票 (例: 2890)")
     parser.add_argument("--broker", type=str, default=None, help="指定查詢特定券商分點 (例: 8440)")
@@ -337,7 +337,9 @@ def main():
             from send_email_report import send_email_report
             html_content = build_exit_report_html(df_top, args.long_days, args.recent_days)
             today_str = time.strftime("%Y-%m-%d")
-            subject = f"🚨 台股主力出貨/逃離雷達日報 ({today_str}) | 共 {len(df_top)} 組大戶下車案例"
+            is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
+            source_tag = "【雲端抓檔】" if is_gh else "【本機抓檔】"
+            subject = f"🚨 {source_tag} 台股主力出貨/逃離雷達日報 ({today_str}) | 共 {len(df_top)} 組大戶下車案例"
             recipients = [args.email_to] if args.email_to else None
             send_email_report(subject, html_content, recipients=recipients, attachment_paths=[out_path])
     else:
