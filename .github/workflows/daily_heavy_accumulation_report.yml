@@ -12,7 +12,8 @@ on:
   #   - cron: "7 12 * * 1-5"
 
   # =========================================================================
-  # 人工點擊「Run workflow」：可選哪一天資料，且預設不發送 Email
+  # =========================================================================
+  # 支援手動點擊「Run workflow」或 Cron-job.org 呼叫 API 觸發 (預設發送 Email)
   # =========================================================================
   workflow_dispatch:
     inputs:
@@ -21,10 +22,10 @@ on:
         required: false
         default: ""
       send_email:
-        description: "是否發送 Email 與 Telegram 報告 (手動點擊預設為關閉，不打擾收件人)"
+        description: "是否發送 Email 與 Telegram 報告 (預設為開啟)"
         type: boolean
         required: false
-        default: false
+        default: true
 
   repository_dispatch:
     types: [trigger-daily-report, run-daily-report]
@@ -50,17 +51,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install duckdb pandas numpy openpyxl requests beautifulsoup4 google-api-python-client google-auth
 
-      - name: 判斷執行模式 (排程預設發信 vs 人工手動不發信)
+      - name: 判斷執行模式 (排程與 Cron-job 預設發信)
         id: config-mode
         run: |
-          # 若非手動 workflow_dispatch (例如 schedule 或 repository_dispatch)，預設發送 Email
-          # 若為手動 workflow_dispatch，則依據使用者勾選的 send_email (預設為 false 不發信)
+          # 預設發送 Email 與 Telegram 報告 (適用於 schedule, repository_dispatch, Cron-job.org)
           SEND_EMAIL="true"
           TARGET_DATE=""
           
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TARGET_DATE="${{ github.event.inputs.target_date }}"
-            if [ "${{ github.event.inputs.send_email }}" != "true" ]; then
+            # 只有當使用者在手動介面明確取消勾選 (傳入 false) 時，才關閉發信
+            if [ "${{ github.event.inputs.send_email }}" = "false" ]; then
               SEND_EMAIL="false"
             fi
           fi
