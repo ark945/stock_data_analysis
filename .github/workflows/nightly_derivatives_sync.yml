@@ -34,9 +34,9 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: 安裝輕量量化套件 (duckdb / pandas / pyarrow / google-api)
+      - name: 安裝輕量量化套件 (duckdb / pandas / requests / bs4 / google-api)
         run: |
-          pip install duckdb pandas pyarrow openpyxl google-api-python-client google-auth
+          pip install duckdb pandas numpy pyarrow openpyxl requests beautifulsoup4 google-api-python-client google-auth
 
       - name: 執行衍生指標運算並同步 Supabase (軋空 / 接刀 / 集中度)
         env:
