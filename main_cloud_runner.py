@@ -299,8 +299,14 @@ def main():
             # 傳入前半段已驗證算好的 tail_vwap_df，杜絕重複運算與檔案搜尋落差
             payload = prepare_chip_payloads(target_data_dir, latest_date, precomputed_vwap_df=tail_vwap_df)
             
+            summary_data = payload.get("daily_chip_summary", [])
+            if isinstance(summary_data, dict):
+                summary_data = [summary_data]
+            elif not isinstance(summary_data, list):
+                summary_data = []
+
             table_mappings = [
-                ("daily_chip_summary", [payload["daily_chip_summary"]] if payload.get("daily_chip_summary") else [], "trade_date"),
+                ("daily_chip_summary", summary_data, "trade_date"),
                 ("chip_accumulation_signals", payload.get("chip_accumulation_signals", []), "trade_date,period_days,symbol,broker_name"),
                 ("chip_exit_signals", payload.get("chip_exit_signals", []), "trade_date,exit_type,symbol,dump_broker_name"),
                 ("broker_institution_ranks", payload.get("broker_institution_ranks", []), "trade_date,category,broker_name,symbol"),

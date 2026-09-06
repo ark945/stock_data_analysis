@@ -49,7 +49,7 @@ jobs:
       - name: 安裝專案依賴
         run: |
           python -m pip install --upgrade pip
-          pip install duckdb pandas numpy openpyxl requests beautifulsoup4 google-api-python-client google-auth
+          pip install duckdb pandas numpy pyarrow openpyxl requests beautifulsoup4 google-api-python-client google-auth
 
       - name: 判斷執行模式 (排程與 Cron-job 預設發信)
         id: config-mode

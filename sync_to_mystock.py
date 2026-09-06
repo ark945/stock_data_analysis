@@ -198,7 +198,7 @@ def prepare_chip_payloads(
         "./temp_cache_parquet",
         "./output_margin"
     ]
-    from chip_derivatives_engine import load_margin_data
+    from chip_derivatives_engine import load_margin_data, load_tdcc_data
     mdf = load_margin_data(actual_date, margin_dirs)
     margin_map = {}
     if not mdf.empty:
@@ -206,15 +206,22 @@ def prepare_chip_payloads(
             if pd.notna(mr.get("short_margin_ratio_pct")):
                 margin_map[str(mr["symbol"])] = float(mr["short_margin_ratio_pct"])
 
-    tdcc_files = sorted(glob.glob(os.path.join(data_dir, "api_tdcc_*.parquet")))
+    tdcc_dirs = [
+        data_dir,
+        "./output_tdcc",
+        "../stock_data_downloader/output_tdcc",
+        "./temp_cache_parquet",
+        "./cloud_data",
+        "./data/tdcc"
+    ]
+    tdf = load_tdcc_data(actual_date, tdcc_dirs)
     tdcc_map = {}
-    if tdcc_files:
-        try:
-            tdf = pd.read_parquet(tdcc_files[-1])
-            for _, tr in tdf.iterrows():
-                tdcc_map[str(tr["symbol"])] = float(tr.get("large_shareholder_pct", 0) or 0)
-        except Exception as _e:
-            pass
+    if not tdf.empty:
+        for _, tr in tdf.iterrows():
+            tdcc_map[str(tr["symbol"])] = float(tr.get("large_shareholder_pct", 0) or 0)
+        print(f"[✓] 成功匹配基準日 ({actual_date}) 之集保千張大戶股權分散表，共載入 {len(tdcc_map)} 檔標的")
+    else:
+        print(f"[!] 提示：未找到小於等於 {actual_date} 之集保股權分散檔案 (api_tdcc_*.parquet)")
     print(f"[*] 可用歷史窗口: {len(absr1_files)} 個交易日 (起: {extract_date_from_filename(os.path.basename(absr1_files[0]))} ~ 訖: {actual_date})")
     print("=" * 65)
 
