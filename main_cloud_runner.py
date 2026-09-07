@@ -218,6 +218,21 @@ def main():
         target_dir = args.local_dir if (args.local_dir and os.path.exists(args.local_dir)) else (
             "./temp_cache_parquet" if os.path.exists("./temp_cache_parquet") else "./output"
         )
+
+        # 觸發第 4 道自愈兜底：若無當日收盤價日K檔案，即刻補抓確保尾盤 VWAP 歸因完整
+        found_close = glob.glob(os.path.join(target_dir, f"*close1*{latest_date}*.parquet")) + glob.glob(f"./temp_cache_close/*close1*{latest_date}*.parquet")
+        if not found_close:
+            try:
+                print(f"[*] 觸發第 4 道自愈兜底：本地即刻補抓 {latest_date} 全市場收盤行情...")
+                downloader_path = os.path.join(os.path.dirname(__file__), "..", "stock_data_downloader")
+                if os.path.exists(downloader_path) and downloader_path not in sys.path:
+                    sys.path.insert(0, downloader_path)
+                from close_price_crawler import run_close_price_crawler
+                dest_close_dir = target_dir if (args.local_dir and os.path.exists(args.local_dir)) else "./temp_cache_close"
+                run_close_price_crawler(latest_date, output_dir=dest_close_dir, upload_gdrive=False)
+            except Exception as _ce:
+                print(f"[!] 自愈補抓收盤價提示: {_ce}")
+
         print(f"[*] 正在運算最新交易日 ({latest_date}) 尾盤放量站上 VWAP 主力歸因雷達...")
         tail_vwap_df = scan_tail_vwap_and_attribute(data_dir=target_dir, target_date=latest_date)
         if not tail_vwap_df.empty:
@@ -235,7 +250,9 @@ def main():
         latest_date=latest_date,
         report_title=report_title,
         top_display_n=8,
-        extra_sections_html=combined_extra_html
+        extra_sections_html=combined_extra_html,
+        files_10d=files_10d,
+        files_20d=files_20d
     )
 
     # 5. 生成包含 4 個 Sheet 的 Excel 附件 (附加 5 個進階情報工作表與 1 個尾盤歸因工作表)

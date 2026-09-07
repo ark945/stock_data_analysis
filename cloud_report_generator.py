@@ -407,6 +407,180 @@ def enrich_cross_period_momentum(
         df_10d["action_guide"] = guides_10d
 
 
+def generate_whale_matrix_html_section(
+    df_5d: pd.DataFrame,
+    df_10d: Optional[pd.DataFrame] = None,
+    df_20d: Optional[pd.DataFrame] = None,
+    files_10d: Optional[List[str]] = None,
+    files_20d: Optional[List[str]] = None,
+    top_n: int = 5
+) -> str:
+    """
+    生成【🐳 權值巨鯨籌碼追蹤矩陣 (Whale Matrix)】HTML 區塊
+    以近 5 日淨買超金額 (net_amt_yi) 降冪排序，並排穿透 5d(點火)、10d(雙週)、20d(底倉) 三週期之資金佈局。
+    """
+    if df_5d is None or df_5d.empty:
+        return ""
+
+    candidates = df_5d.sort_values(by="net_amt_yi", ascending=False)
+    whale_df = candidates.head(top_n).copy()
+    if whale_df.empty or float(whale_df.iloc[0].get("net_amt_yi", 0)) < 1.0:
+        return ""
+
+    map_10d = {}
+    if df_10d is not None and not df_10d.empty:
+        for _, r in df_10d.iterrows():
+            k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+            map_10d[k] = float(r.get("net_amt_yi", 0))
+
+    map_20d = {}
+    if df_20d is not None and not df_20d.empty:
+        for _, r in df_20d.iterrows():
+            k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+            map_20d[k] = float(r.get("net_amt_yi", 0))
+
+    # 若特定巨鯨在 10d/20d 因純度未達 70% 沒入榜，直接向底層 Parquet 提取真實金額 (零盲點)
+    missing_10d_pairs = []
+    missing_20d_pairs = []
+    for _, r in whale_df.iterrows():
+        pair = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+        if pair not in map_10d:
+            missing_10d_pairs.append(pair)
+        if pair not in map_20d:
+            missing_20d_pairs.append(pair)
+
+    if files_10d and missing_10d_pairs:
+        try:
+            f_norm = [f.replace("\\", "/") for f in files_10d]
+            where_clauses = " OR ".join([f"(symbol = '{s}' AND broker_id = '{b}')" for s, b in missing_10d_pairs])
+            sql_patch_10 = f"SELECT symbol, broker_id, ROUND(SUM(net_amt) / 100000.0, 2) as net_amt_yi FROM read_parquet({f_norm}) WHERE {where_clauses} GROUP BY symbol, broker_id"
+            df_patch_10 = duckdb.query(sql_patch_10).to_df()
+            for _, pr in df_patch_10.iterrows():
+                map_10d[(str(pr["symbol"]), str(pr["broker_id"]))] = float(pr["net_amt_yi"])
+        except Exception as _e:
+            pass
+
+    if files_20d and missing_20d_pairs:
+        try:
+            f_norm = [f.replace("\\", "/") for f in files_20d]
+            where_clauses = " OR ".join([f"(symbol = '{s}' AND broker_id = '{b}')" for s, b in missing_20d_pairs])
+            sql_patch_20 = f"SELECT symbol, broker_id, ROUND(SUM(net_amt) / 100000.0, 2) as net_amt_yi FROM read_parquet({f_norm}) WHERE {where_clauses} GROUP BY symbol, broker_id"
+            df_patch_20 = duckdb.query(sql_patch_20).to_df()
+            for _, pr in df_patch_20.iterrows():
+                map_20d[(str(pr["symbol"]), str(pr["broker_id"]))] = float(pr["net_amt_yi"])
+        except Exception as _e:
+            pass
+
+    rows_html = ""
+    for idx, (_, row) in enumerate(whale_df.iterrows()):
+        rank = idx + 1
+        rank_badge_bg = "#dc2626" if rank <= 3 else "#2563eb"
+        sym = str(row.get("symbol", ""))
+        sname = str(row.get("stock_name", ""))
+        bname = str(row.get("主力分點", row.get("broker_name", "")))
+        bid = str(row.get("broker_id", ""))
+        m_type = str(row.get("market", "上市"))
+
+        amt_5d = float(row.get("net_amt_yi", 0))
+        amt_10d = map_10d.get((sym, bid), None)
+        amt_20d = map_20d.get((sym, bid), None)
+
+        amt_10d_str = f"+{amt_10d:,.2f} 億" if (amt_10d is not None and amt_10d > 0) else ("-" if amt_10d is None else f"{amt_10d:,.2f} 億")
+        amt_20d_str = f"+{amt_20d:,.2f} 億" if (amt_20d is not None and amt_20d > 0) else ("-" if amt_20d is None else f"{amt_20d:,.2f} 億")
+
+        m_tag = str(row.get("momentum_tag", ""))
+        if not m_tag or m_tag == "None":
+            if amt_10d and amt_10d > 0:
+                pct = (amt_5d / amt_10d) * 100
+                m_tag = f"🚀 急行軍 ({pct:.0f}%)" if pct >= 80 else (f"🌊 勻速波段 ({pct:.0f}%)" if pct >= 40 else f"⏳ 放緩 ({pct:.0f}%)")
+            else:
+                m_tag = "⚡ 突發點火"
+
+        if amt_20d and amt_20d >= 50.0 and amt_5d >= 10.0:
+            strategy = "🏰 長莊二次總攻 (長波底倉渾厚，短線爆發力極強)"
+            strat_color = "#7c3aed"
+        elif amt_20d and amt_20d >= 20.0 and (amt_5d / amt_20d) <= 0.6:
+            strategy = "💎 月線波段定海神針 (籌碼高度鎖定，沿均線順勢持有)"
+            strat_color = "#0369a1"
+        elif "急行軍" in m_tag or (amt_10d and (amt_5d / amt_10d) >= 0.85):
+            strategy = "🚀 短線瘋狂點火 (突破前夕急行軍，時效爆發力極高)"
+            strat_color = "#b91c1c"
+        else:
+            strategy = "🌊 穩健加碼佈局 (主力持續有節奏建倉)"
+            strat_color = "#047857"
+
+        m_badge = '<span style="background-color: #e6f7ff; color: #096dd9; border: 1px solid #91d5ff; font-size: 11px; padding: 1px 4px; border-radius: 3px; font-weight: bold; margin-left: 4px;">上市</span>' if m_type == "上市" else '<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; font-size: 11px; padding: 1px 4px; border-radius: 3px; font-weight: bold; margin-left: 4px;">上櫃</span>'
+
+        rows_html += f"""
+        <tr style="border-bottom: 1px solid #f1f5f9; font-size: 13px;">
+            <td style="padding: 10px 8px; text-align: center; white-space: nowrap;">
+                <span style="background-color: {rank_badge_bg}; color: #ffffff; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: bold;">{rank}</span>
+            </td>
+            <td style="padding: 10px; font-weight: bold; color: #0f172a; white-space: nowrap;">
+                {sym} {sname} {m_badge}
+            </td>
+            <td style="padding: 10px; font-weight: 600; color: #1e3a8a; white-space: nowrap;">
+                {bname}
+            </td>
+            <td style="padding: 10px; text-align: right; font-weight: 800; color: #dc2626; white-space: nowrap; font-size: 14px;">
+                +{amt_5d:,.2f} 億
+            </td>
+            <td style="padding: 10px; text-align: right; font-weight: 600; color: #0f172a; white-space: nowrap;">
+                {amt_10d_str}
+            </td>
+            <td style="padding: 10px; text-align: right; font-weight: 600; color: #047857; white-space: nowrap;">
+                {amt_20d_str}
+            </td>
+            <td style="padding: 10px; text-align: center; white-space: nowrap;">
+                <span style="background-color: #f8fafc; color: #334155; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">
+                    {m_tag}
+                </span>
+            </td>
+            <td style="padding: 10px; font-size: 12px; font-weight: 600; color: {strat_color};">
+                {strategy}
+            </td>
+        </tr>
+        """
+
+    whale_section_html = f"""
+    <div style="margin-bottom: 28px; border: 1px solid #cbd5e1; border-radius: 10px; overflow: hidden; background: #ffffff; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);">
+        <div style="background: linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%); padding: 14px 20px; color: #ffffff; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+            <div>
+                <div style="font-size: 16px; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+                    <span>🐳</span>
+                    <span>【權值巨鯨籌碼追蹤矩陣】近 5 日全市場淨買超金額 TOP {len(whale_df)} 穿透</span>
+                    <span style="background: rgba(255,255,255,0.2); font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 6px;">5d · 10d · 20d 跨週期聯動</span>
+                </div>
+                <div style="font-size: 12px; color: #e0f2fe; margin-top: 4px;">
+                    突破單一「純度評分」對權值股之遮蔽效應，直擊外資與百億長莊在權值重兵之推進節奏與底倉厚度。
+                </div>
+            </div>
+        </div>
+
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                <thead>
+                    <tr style="background-color: #f8fafc; color: #475569; font-weight: 700; font-size: 12px; border-bottom: 2px solid #e2e8f0;">
+                        <th style="padding: 10px 8px; text-align: center; width: 40px; white-space: nowrap;">排名</th>
+                        <th style="padding: 10px; min-width: 140px; white-space: nowrap;">股票標的</th>
+                        <th style="padding: 10px; min-width: 130px; white-space: nowrap;">核心推手分點</th>
+                        <th style="padding: 10px; text-align: right; min-width: 110px; white-space: nowrap;">近 5 日 (點火)</th>
+                        <th style="padding: 10px; text-align: right; min-width: 110px; white-space: nowrap;">近 10 日 (雙週)</th>
+                        <th style="padding: 10px; text-align: right; min-width: 110px; white-space: nowrap;">近 20 日 (月底倉)</th>
+                        <th style="padding: 10px; text-align: center; min-width: 130px; white-space: nowrap;">雙週推進動能</th>
+                        <th style="padding: 10px; min-width: 220px; white-space: nowrap;">操盤戰略定性與指引</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+    return whale_section_html
+
+
 def generate_single_table_html(top_df: pd.DataFrame) -> str:
     """生成單一週期的表格 HTML (含點火起算日、吃貨歷時、標籤與回測報酬率/集中度)"""
     if top_df.empty:
@@ -551,10 +725,24 @@ def generate_multi_period_html_report(
     report_title: str = "台股主力四週期連續重押吸籌雷達日報",
     top_display_n: int = 15,
     extra_sections_html: str = "",
-    source_tag: str = "【雲端】"
+    source_tag: str = "【雲端】",
+    whale_matrix_html: str = "",
+    files_10d: Optional[List[str]] = None,
+    files_20d: Optional[List[str]] = None
 ) -> str:
     """生成包含 5日 (短線)、10日 (雙週波段)、20日 (月波段)、60日 (季大戶) 之全功能 HTML 郵件內容 (預設精選 TOP N，以控制郵件長度)"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 自動生成權值巨鯨籌碼追蹤矩陣 (若未顯式傳入)
+    if not whale_matrix_html and "5d" in reports_dict:
+        whale_matrix_html = generate_whale_matrix_html_section(
+            df_5d=reports_dict.get("5d"),
+            df_10d=reports_dict.get("10d"),
+            df_20d=reports_dict.get("20d"),
+            files_10d=files_10d,
+            files_20d=files_20d,
+            top_n=5
+        )
     
     sections_html = ""
     period_configs = [
@@ -643,8 +831,9 @@ def generate_multi_period_html_report(
             </div>
         </div>
 
-        <!-- 主體內容 (4 個週期排行榜) -->
+        <!-- 主體內容 (權值巨鯨矩陣 + 4 個週期排行榜) -->
         <div style="padding: 24px 20px 10px 20px;">
+            {whale_matrix_html}
             {sections_html}
         </div>
 
