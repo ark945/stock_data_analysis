@@ -266,7 +266,12 @@ def prepare_chip_payloads(
     for p in [5, 10, 20, 60]:
         df_p = period_dfs.get(p, pd.DataFrame())
         if not df_p.empty:
-            for _, r in df_p.head(50).iterrows():
+            # 融合雙軌菁英：評分前 35 名 (中小型高純度飆股) ＋ 實體金額前 25 名 (百億級權值巨鯨)
+            top_by_score = df_p.head(35)
+            top_by_amt = df_p.sort_values(by="net_amt_yi", ascending=False).head(25)
+            merged_candidates = pd.concat([top_by_score, top_by_amt]).drop_duplicates(subset=["symbol", "broker_id"])
+
+            for _, r in merged_candidates.iterrows():
                 p_tag = str(r.get("momentum_tag")) if pd.notna(r.get("momentum_tag")) and r.get("momentum_tag") else ("💎 波段主力" if p >= 20 else "⚡ 短線主力")
                 a_guide = str(r.get("action_guide")) if pd.notna(r.get("action_guide")) and r.get("action_guide") else ("主力重押鎖碼，順勢跟隨" if p >= 20 else "短線點火爆量，注意開高震盪")
                 accum_rows.append({
