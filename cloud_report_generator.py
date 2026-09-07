@@ -348,16 +348,30 @@ def enrich_cross_period_momentum(
         for _, r in df_5d.iterrows():
             k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
             amt_5d = float(r.get("net_amt_yi", 0))
+            dev = float(r["cost_deviation_pct"]) if pd.notna(r.get("cost_deviation_pct")) else 0.0
+
             if k in net_10d_map and net_10d_map[k] > 0:
                 amt_10d = net_10d_map[k]
                 ratio = round((amt_5d / amt_10d) * 100, 1)
                 ratios_5d.append(ratio)
                 if ratio >= 80.0:
-                    m_tags_5d.append(f"🚀 突發急行軍 ({ratio:.0f}%)")
-                    guides_5d.append("主力近2~3天突發暴買急行軍，時效爆發力極強，留意乖離震盪，回測均價防守布局")
+                    # 結合成本偏離度防護濾網 (防範高檔竭盡買盤 Buy Climax)
+                    if dev > 12.0:
+                        m_tags_5d.append(f"🚨 高檔乖離急行軍 ({ratio:.0f}%)")
+                        guides_5d.append(f"短線急行軍暴買但現價已偏離主力成本 +{dev:.1f}%，慎防高檔竭盡買盤或誘多拉高，切忌盲目追高，提防爆量長黑")
+                    elif dev < -5.0:
+                        m_tags_5d.append(f"💎 破發逆勢急行軍 ({ratio:.0f}%)")
+                        guides_5d.append(f"主力於成本下方 ({dev:.1f}%) 逆勢暴買急行軍，護盤反彈意圖濃厚，具高性價比安全防守點位")
+                    else:
+                        m_tags_5d.append(f"🚀 突破急行軍 ({ratio:.0f}%)")
+                        guides_5d.append(f"主力於成本附近 (乖離 {dev:+.1f}%) 發動暴買急行軍，時效爆發力極強，可沿主力加權成本防守布局")
                 elif 40.0 <= ratio < 80.0:
-                    m_tags_5d.append(f"🌊 勻速波段建倉 ({ratio:.0f}%)")
-                    guides_5d.append("主力雙週內有紀律持續吃貨，籌碼結構健康穩定，適合沿均線波段順勢持有")
+                    if dev > 15.0:
+                        m_tags_5d.append(f"🌊 波段高檔推升 ({ratio:.0f}%)")
+                        guides_5d.append(f"主力雙週內勻速吃貨，但現價已偏離成本 +{dev:.1f}%，持股者沿均線移動停利，空手者勿市價追高")
+                    else:
+                        m_tags_5d.append(f"🌊 勻速波段建倉 ({ratio:.0f}%)")
+                        guides_5d.append("主力雙週內有紀律持續吃貨，籌碼結構健康穩定，適合沿均線波段順勢持有")
                 elif ratio <= 20.0:
                     m_tags_5d.append(f"⚠️ 買盤已熄火 ({ratio:.0f}%)")
                     guides_5d.append("10日總額雖高，但近5日買盤近乎停滯，慎防主力吃飽收手，切忌盲目追高")
@@ -366,8 +380,12 @@ def enrich_cross_period_momentum(
                     guides_5d.append("主力吃貨節奏有所放緩，建議觀察下檔均線支撐強度")
             else:
                 ratios_5d.append(100.0)
-                m_tags_5d.append("⚡ 游資短點火")
-                guides_5d.append("前段無長莊底倉，短線熱錢或隔日沖快速點火，宜設嚴格移動停利")
+                if dev > 10.0:
+                    m_tags_5d.append("⚡ 游資高檔搶短")
+                    guides_5d.append(f"前段無底倉且偏離均價 +{dev:.1f}%，短線熱錢或隔日沖高檔搶短，隔日極易開高反手倒貨，嚴格落實停利")
+                else:
+                    m_tags_5d.append("⚡ 游資短點火")
+                    guides_5d.append("前段無長莊底倉，短線熱錢或隔日沖快速點火，宜設嚴格移動停利")
 
         df_5d["momentum_tag"] = m_tags_5d
         df_5d["momentum_ratio_pct"] = ratios_5d
@@ -381,13 +399,19 @@ def enrich_cross_period_momentum(
         for _, r in df_10d.iterrows():
             k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
             amt_10d = float(r.get("net_amt_yi", 0))
+            dev = float(r["cost_deviation_pct"]) if pd.notna(r.get("cost_deviation_pct")) else 0.0
+
             if k in net_5d_map and amt_10d > 0:
                 amt_5d = net_5d_map[k]
                 ratio = round((amt_5d / amt_10d) * 100, 1)
                 ratios_10d.append(ratio)
                 if ratio >= 80.0:
-                    m_tags_10d.append(f"🚀 突發急行軍 (近5d佔{ratio:.0f}%)")
-                    guides_10d.append("雙週買盤幾乎全在近2~3天狂砸，屬主力急行軍突破，剛點火爆發力強")
+                    if dev > 12.0:
+                        m_tags_10d.append(f"🚨 高檔乖離急行軍 (近5d佔{ratio:.0f}%)")
+                        guides_10d.append(f"雙週買盤全在近2~3天狂砸但偏離成本 +{dev:.1f}%，慎防拉高竭盡，嚴格落實分批停利")
+                    else:
+                        m_tags_10d.append(f"🚀 突破急行軍 (近5d佔{ratio:.0f}%)")
+                        guides_10d.append(f"雙週買盤全在近2~3天狂砸突破 (乖離 {dev:+.1f}%)，剛點火爆發力強，回測均線支撐布局")
                 elif 40.0 <= ratio < 80.0:
                     m_tags_10d.append(f"🌊 勻速波段吃貨 (近5d佔{ratio:.0f}%)")
                     guides_10d.append("主力雙週每天持續買超，波段籌碼沉澱紮實，適合中線波段抱牢")
