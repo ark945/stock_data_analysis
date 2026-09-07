@@ -90,13 +90,18 @@ def main():
         print("[!] 未取得任何有效 Parquet 檔案，程序終止。")
         sys.exit(1)
 
-    # 過濾出標準分點檔案 (排除 finmind 與 close1 避免 schema mismatch)
+    # 過濾出標準分點檔案 (確保只匹配 absr1，徹底排除 margin/taifex/tdcc/close1 避免 schema mismatch)
     absr1_files = [
         f for f in parquet_files
-        if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+        if "absr1" in os.path.basename(f).lower()
     ]
     if not absr1_files:
-        absr1_files = parquet_files
+        absr1_files = [
+            f for f in parquet_files
+            if "finmind" not in os.path.basename(f).lower() and "close1" not in os.path.basename(f).lower()
+               and "margin" not in os.path.basename(f).lower() and "taifex" not in os.path.basename(f).lower()
+               and "tdcc" not in os.path.basename(f).lower()
+        ]
 
     # 依日期由舊到新排序
     absr1_files.sort(key=lambda x: extract_date_from_filename(os.path.basename(x)))
