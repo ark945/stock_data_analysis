@@ -27,7 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def build_exit_report_html(df: pd.DataFrame, long_days: int, recent_days: int) -> str:
+def build_exit_report_html(df: pd.DataFrame, long_days: int, recent_days: int, report_date: Optional[str] = None) -> str:
     """將出貨/逃離雷達結果轉為簡潔 FinTech 風格 HTML 郵件內文"""
     rows_html = ""
     for _, r in df.iterrows():
@@ -45,12 +45,13 @@ def build_exit_report_html(df: pd.DataFrame, long_days: int, recent_days: int) -
         </tr>
         """
 
+    date_label = f"基準交易日: {report_date} ｜ " if report_date else ""
     html = f"""
     <html><body style="font-family:'Microsoft JhengHei',Arial,sans-serif; background:#f8fafc; padding:20px;">
         <div style="max-width:1100px; margin:0 auto; background:#ffffff; border-radius:10px; overflow:hidden; border:1px solid #e2e8f0;">
             <div style="background:#0f172a; padding:16px 22px;">
                 <div style="color:#fff; font-size:18px; font-weight:800;">🚨 全市場主力出貨/逃離雷達</div>
-                <div style="color:#94a3b8; font-size:12px; margin-top:4px;">長期基期 {long_days} 日曾高純度重押 → 近期 {recent_days} 日翻臉高純度賣出，共 {len(df)} 組案例</div>
+                <div style="color:#94a3b8; font-size:12px; margin-top:4px;">{date_label}長期基期 {long_days} 日曾高純度重押 → 近期 {recent_days} 日翻臉高純度賣出，共 {len(df)} 組案例</div>
             </div>
             <div style="padding:14px 22px;">
                 <table style="width:100%; border-collapse:collapse; font-size:12px; color:#1e293b;">
@@ -333,13 +334,30 @@ def main():
             out_path = os.path.join(os.path.dirname(__file__), "output", f"exit_distribution_cases_{timestamp_str}.xlsx")
         save_report_safely(df_top, out_path)
 
+        # 決定真實資料基準交易日 (優先取 df 內之近期出貨訖日，次取檔案清單最新日，最後 fallback 至系統時間)
+        report_date = args.date
+        if not report_date and not df_top.empty and "近期出貨訖日" in df_top.columns:
+            valid_end_dates = df_top["近期出貨訖日"].dropna().astype(str).str.strip()
+            if not valid_end_dates.empty:
+                report_date = valid_end_dates.max()
+
+        if not report_date:
+            import re
+            absr_files = _list_absr1_files(data_dir)
+            if absr_files:
+                m = re.search(r'\d{4}-\d{2}-\d{2}', os.path.basename(absr_files[-1]))
+                if m:
+                    report_date = m.group(0)
+
+        if not report_date:
+            report_date = time.strftime("%Y-%m-%d")
+
         if args.email:
             from send_email_report import send_email_report
-            html_content = build_exit_report_html(df_top, args.long_days, args.recent_days)
-            today_str = time.strftime("%Y-%m-%d")
+            html_content = build_exit_report_html(df_top, args.long_days, args.recent_days, report_date=report_date)
             is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
             source_tag = "【雲端】" if is_gh else "【本機】"
-            subject = f"🚨 {source_tag} 台股主力出貨/逃離雷達日報 ({today_str}) | 共 {len(df_top)} 組大戶下車案例"
+            subject = f"🚨 {source_tag} 台股主力出貨/逃離雷達日報 ({report_date}) | 共 {len(df_top)} 組大戶下車案例"
             recipients = [args.email_to] if args.email_to else None
             send_email_report(subject, html_content, recipients=recipients, attachment_paths=[out_path])
     else:
