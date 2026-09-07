@@ -30,7 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # 引入本專案運算模組
-from cloud_report_generator import run_heavy_accumulation_analysis
+from cloud_report_generator import run_heavy_accumulation_analysis, enrich_cross_period_momentum
 from find_exit_cases import scan_exit_distribution
 from institutional_broker_rankings import run_institutional_ranking_analysis
 from reverse_broker_matcher import scan_tail_vwap_and_attribute
@@ -246,7 +246,7 @@ def prepare_chip_payloads(
         (20, files_20d, close_20d, 0.5, 75.0, 80.0, 3),
         (60, files_60d, close_60d, 1.0, 75.0, 150.0, 5)
     ]
-    accum_rows = []
+    period_dfs = {}
     for p, p_files, c_files, min_amt, min_ratio, min_vol, min_days in accum_configs:
         df_p, _ = run_heavy_accumulation_analysis(
             parquet_files=p_files,
@@ -257,8 +257,18 @@ def prepare_chip_payloads(
             close_price_files=c_files,
             top_n=30
         )
+        period_dfs[p] = df_p
+
+    # 執行跨週期主力動能加速度比對 (5日 vs 10日 節奏穿透)
+    enrich_cross_period_momentum(period_dfs.get(5), period_dfs.get(10), period_dfs.get(20))
+
+    accum_rows = []
+    for p in [5, 10, 20, 60]:
+        df_p = period_dfs.get(p, pd.DataFrame())
         if not df_p.empty:
             for _, r in df_p.head(50).iterrows():
+                p_tag = str(r.get("momentum_tag")) if pd.notna(r.get("momentum_tag")) and r.get("momentum_tag") else ("💎 波段主力" if p >= 20 else "⚡ 短線主力")
+                a_guide = str(r.get("action_guide")) if pd.notna(r.get("action_guide")) and r.get("action_guide") else ("主力重押鎖碼，順勢跟隨" if p >= 20 else "短線點火爆量，注意開高震盪")
                 accum_rows.append({
                     "trade_date": actual_date,
                     "period_days": int(p),
@@ -276,8 +286,8 @@ def prepare_chip_payloads(
                     "concentration_pct": float(r.get("concentration_pct", 0)) if pd.notna(r.get("concentration_pct")) else None,
                     "backtest_win_rate": float(r.get("backtest_win_rate", 0)) if pd.notna(r.get("backtest_win_rate")) else None,
                     "backtest_avg_return_pct": float(r.get("backtest_avg_return_pct", 0)) if pd.notna(r.get("backtest_avg_return_pct")) else None,
-                    "persona_tag": "💎 波段主力" if p >= 20 else "⚡ 短線主力",
-                    "action_guide": "主力重押鎖碼，順勢跟隨" if p >= 20 else "短線點火爆量，注意開高震盪",
+                    "persona_tag": p_tag,
+                    "action_guide": a_guide,
                     "short_margin_ratio_pct": margin_map.get(str(r.get("symbol", "")), None),
                     "large_shareholder_pct": tdcc_map.get(str(r.get("symbol", "")), None)
                 })

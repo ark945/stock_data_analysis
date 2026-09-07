@@ -313,6 +313,100 @@ def run_heavy_accumulation_analysis(
     return df, summary
 
 
+def enrich_cross_period_momentum(
+    df_5d: pd.DataFrame,
+    df_10d: pd.DataFrame,
+    df_20d: Optional[pd.DataFrame] = None
+) -> None:
+    """
+    跨週期主力動能加速度分析 (Cross-Period Momentum Intelligence)
+    以純記憶體向量化比對 5日 vs 10日 淨買超佔比與推進節奏，直接豐富化 DataFrame：
+    - momentum_tag: 徽章名稱 (如 '🚀 突發急行軍 (100%)', '🌊 勻速波段建倉 (52%)', '⚠️ 買盤已熄火 (12%)', '⚡ 游資短點火')
+    - momentum_ratio_pct: 5d淨買超 / 10d淨買超 百分比
+    - action_guide: 針對動能型態之專屬次日實戰作戰指引
+    """
+    if df_5d is None or df_10d is None:
+        return
+
+    net_10d_map = {}
+    if not df_10d.empty:
+        for _, r in df_10d.iterrows():
+            k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+            net_10d_map[k] = float(r.get("net_amt_yi", 0))
+
+    net_5d_map = {}
+    if not df_5d.empty:
+        for _, r in df_5d.iterrows():
+            k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+            net_5d_map[k] = float(r.get("net_amt_yi", 0))
+
+    # 1. 豐富化 5 日 DataFrame
+    if not df_5d.empty:
+        m_tags_5d = []
+        ratios_5d = []
+        guides_5d = []
+        for _, r in df_5d.iterrows():
+            k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+            amt_5d = float(r.get("net_amt_yi", 0))
+            if k in net_10d_map and net_10d_map[k] > 0:
+                amt_10d = net_10d_map[k]
+                ratio = round((amt_5d / amt_10d) * 100, 1)
+                ratios_5d.append(ratio)
+                if ratio >= 80.0:
+                    m_tags_5d.append(f"🚀 突發急行軍 ({ratio:.0f}%)")
+                    guides_5d.append("主力近2~3天突發暴買急行軍，時效爆發力極強，留意乖離震盪，回測均價防守布局")
+                elif 40.0 <= ratio < 80.0:
+                    m_tags_5d.append(f"🌊 勻速波段建倉 ({ratio:.0f}%)")
+                    guides_5d.append("主力雙週內有紀律持續吃貨，籌碼結構健康穩定，適合沿均線波段順勢持有")
+                elif ratio <= 20.0:
+                    m_tags_5d.append(f"⚠️ 買盤已熄火 ({ratio:.0f}%)")
+                    guides_5d.append("10日總額雖高，但近5日買盤近乎停滯，慎防主力吃飽收手，切忌盲目追高")
+                else:
+                    m_tags_5d.append(f"⏳ 買盤放緩 ({ratio:.0f}%)")
+                    guides_5d.append("主力吃貨節奏有所放緩，建議觀察下檔均線支撐強度")
+            else:
+                ratios_5d.append(100.0)
+                m_tags_5d.append("⚡ 游資短點火")
+                guides_5d.append("前段無長莊底倉，短線熱錢或隔日沖快速點火，宜設嚴格移動停利")
+
+        df_5d["momentum_tag"] = m_tags_5d
+        df_5d["momentum_ratio_pct"] = ratios_5d
+        df_5d["action_guide"] = guides_5d
+
+    # 2. 豐富化 10 日 DataFrame
+    if not df_10d.empty:
+        m_tags_10d = []
+        ratios_10d = []
+        guides_10d = []
+        for _, r in df_10d.iterrows():
+            k = (str(r.get("symbol", "")), str(r.get("broker_id", "")))
+            amt_10d = float(r.get("net_amt_yi", 0))
+            if k in net_5d_map and amt_10d > 0:
+                amt_5d = net_5d_map[k]
+                ratio = round((amt_5d / amt_10d) * 100, 1)
+                ratios_10d.append(ratio)
+                if ratio >= 80.0:
+                    m_tags_10d.append(f"🚀 突發急行軍 (近5d佔{ratio:.0f}%)")
+                    guides_10d.append("雙週買盤幾乎全在近2~3天狂砸，屬主力急行軍突破，剛點火爆發力強")
+                elif 40.0 <= ratio < 80.0:
+                    m_tags_10d.append(f"🌊 勻速波段吃貨 (近5d佔{ratio:.0f}%)")
+                    guides_10d.append("主力雙週每天持續買超，波段籌碼沉澱紮實，適合中線波段抱牢")
+                elif ratio <= 20.0:
+                    m_tags_10d.append(f"⚠️ 買盤已熄火 (近5d佔{ratio:.0f}%)")
+                    guides_10d.append("雙週總量看似龐大，但近5日已停滯，主力吃飽待散戶抬轎，嚴禁追高")
+                else:
+                    m_tags_10d.append(f"⏳ 節奏放緩 (近5d佔{ratio:.0f}%)")
+                    guides_10d.append("主力買盤節奏稍緩，留意整理區間支撐")
+            else:
+                ratios_10d.append(0.0)
+                m_tags_10d.append("❄️ 近期停滯/退場")
+                guides_10d.append("主力近5日完全停手或轉調節，前段買盤已鈍化，宜保守觀望")
+
+        df_10d["momentum_tag"] = m_tags_10d
+        df_10d["momentum_ratio_pct"] = ratios_10d
+        df_10d["action_guide"] = guides_10d
+
+
 def generate_single_table_html(top_df: pd.DataFrame) -> str:
     """生成單一週期的表格 HTML (含點火起算日、吃貨歷時、標籤與回測報酬率/集中度)"""
     if top_df.empty:
@@ -339,6 +433,22 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
             tags.append(f'<span style="background-color: #fff0f6; color: #c41d7f; border: 1px solid #ffadd2; {tag_style}">🎯 絕對鎖碼</span>')
         if row["net_amt_yi"] >= 1.0:
             tags.append(f'<span style="background-color: #f9f0ff; color: #531dab; border: 1px solid #d3adf7; {tag_style}">💰 億級重押</span>')
+
+        # 跨週期主力動能加速度標籤 (5d vs 10d 智慧比對)
+        momentum_tag = row.get("momentum_tag")
+        if pd.notna(momentum_tag) and momentum_tag:
+            m_text = str(momentum_tag)
+            if "突發急行軍" in m_text:
+                m_bg = "#f9f0ff"; m_color = "#722ed1"; m_border = "#d3adf7"
+            elif "勻速波段" in m_text:
+                m_bg = "#e6f7ff"; m_color = "#096dd9"; m_border = "#91d5ff"
+            elif "熄火" in m_text or "停滯" in m_text:
+                m_bg = "#fffbe6"; m_color = "#d46b08"; m_border = "#ffe58f"
+            elif "游資" in m_text:
+                m_bg = "#feffe6"; m_color = "#ad8b00"; m_border = "#fffb8f"
+            else:
+                m_bg = "#f5f5f5"; m_color = "#595959"; m_border = "#d9d9d9"
+            tags.append(f'<span style="background-color: {m_bg}; color: {m_color}; border: 1px solid {m_border}; {tag_style}">{m_text}</span>')
 
         # 點火日相對高低位置標籤 (需 close_price_files 才有數值)
         position_pct = row.get("position_in_range_pct")

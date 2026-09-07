@@ -166,6 +166,10 @@ def main():
         close_price_files=close_60d
     )
 
+    # 3.1 跨週期主力動能加速度豐富化 (5日 vs 10日 節奏穿透)
+    print("[*] 正在比對 5日 vs 10日 跨週期主力動能加速度與進出節奏...")
+    enrich_cross_period_momentum(df_5d, df_10d, df_20d)
+
     reports_dict = {
         "5d": df_5d,
         "10d": df_10d,
