@@ -193,8 +193,7 @@ def prepare_chip_payloads(
     margin_dirs = [
         data_dir,
         os.path.join(os.path.dirname(__file__), "output_margin"),
-        r"d:\MyProject\stock_data_downloader\output_margin",
-        "../stock_data_downloader/output_margin",
+        os.path.join(os.path.dirname(__file__), "..", "stock_data_downloader", "output_margin"),
         "./temp_cache_parquet",
         "./output_margin"
     ]
@@ -612,7 +611,8 @@ def sync_single_day(data_dir: str, target_date: str, supabase_url: str, supabase
 
 def main():
     parser = argparse.ArgumentParser(description="myStock 雲端籌碼戰情室資料同步模組")
-    parser.add_argument("--data-dir", default=r"d:\MyProject\stock_data_analysis\20260822分點資料", help="資料目錄")
+    default_dir = "./temp_cache_parquet" if os.path.exists("./temp_cache_parquet") else ("./20260822分點資料" if os.path.exists("./20260822分點資料") else ".")
+    parser.add_argument("--data-dir", default=default_dir, help="資料目錄 (預設自動偵測 temp_cache_parquet 或當前目錄)")
     parser.add_argument("--date", default=None, help="指定單一交易日 (YYYY-MM-DD)")
     parser.add_argument("--start-date", default=None, help="批次同步起始日 (YYYY-MM-DD)")
     parser.add_argument("--end-date", default=None, help="批次同步結束日 (YYYY-MM-DD)")
@@ -627,7 +627,6 @@ def main():
 
     if not supabase_url or not supabase_key:
         for env_p in [
-            r"d:\MyProject\myStock\.env",
             os.path.join(os.path.dirname(__file__), "..", "myStock", ".env"),
             os.path.join(os.path.dirname(__file__), ".env")
         ]:
