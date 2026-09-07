@@ -24,6 +24,7 @@ import numpy as np
 from cloud_gdrive_downloader import download_recent_parquet_files, download_recent_close_price_files, extract_date_from_filename
 from cloud_report_generator import (
     run_heavy_accumulation_analysis,
+    enrich_cross_period_momentum,
     generate_multi_period_html_report,
     generate_multi_sheet_excel
 )
