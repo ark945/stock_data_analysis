@@ -640,12 +640,19 @@ def generate_single_table_html(top_df: pd.DataFrame) -> str:
         tags = []
         tag_style = 'display: inline-block; white-space: nowrap; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px; margin-top: 2px;'
         
-        # 點火時間與吃貨型態標籤
+        # 點火時間與吃貨型態標籤 (結合跨週期動能比對，杜絕語意衝突)
         accum_days = int(row.get("accum_days", 1))
+        momentum_tag = str(row.get("momentum_tag") or "")
+        has_long_base = any(k in momentum_tag for k in ["勻速波段", "波段高檔", "熄火", "買盤已熄火", "放緩", "節奏放緩"])
+
         if row["buy_ratio_pct"] >= 85 and row["buy_days"] >= 4:
             tags.append(f'<span style="background-color: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; {tag_style}">⭐ 川湖重押型</span>')
         elif accum_days <= 7 or row["trade_days"] <= 3:
-            tags.append(f'<span style="background-color: #fff7e6; color: #d46b08; border: 1px solid #ffd591; {tag_style}">🚀 剛點火</span>')
+            if has_long_base:
+                # 若跨週期比對已有雙週長波底倉，不再顯示「剛點火」，改為更精確的「波段加碼」
+                tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 波段加碼</span>')
+            else:
+                tags.append(f'<span style="background-color: #fff7e6; color: #d46b08; border: 1px solid #ffd591; {tag_style}">🚀 剛點火</span>')
         elif row["buy_days"] >= 3 and row["buy_ratio_pct"] >= 75:
             tags.append(f'<span style="background-color: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; {tag_style}">🔥 連續吸籌</span>')
         
