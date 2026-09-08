@@ -402,12 +402,18 @@ def enrich_cross_period_momentum(
                     guides_5d.append("主力吃貨節奏有所放緩，建議觀察下檔均線支撐強度")
             else:
                 ratios_5d.append(100.0)
-                if dev > 10.0:
+                if amt_5d >= 10.0:
+                    m_tags_5d.append("🐳 權值巨鯨重押")
+                    guides_5d.append("百億級巨鯨大部隊重金押注，屬機構級權值控盤，建議沿均線或成本區順勢跟隨")
+                elif amt_5d >= 5.0:
+                    m_tags_5d.append("🔥 大戶波段突襲")
+                    guides_5d.append("數十億級主力強勢進駐突襲，資金動能強勁，沿短期均線順勢布局")
+                elif dev > 10.0:
                     m_tags_5d.append("⚡ 游資高檔搶短")
-                    guides_5d.append(f"前段無底倉且偏離均價 +{dev:.1f}%，短線熱錢或隔日沖高檔搶短，隔日極易開高反手倒貨，嚴格落實停利")
+                    guides_5d.append(f"前段無底倉且偏離均價 +{dev:.1f}%，短線熱錢高檔搶短，隔日極易開高震盪，嚴格落實停利")
                 else:
                     m_tags_5d.append("⚡ 游資短點火")
-                    guides_5d.append("前段無長莊底倉，短線熱錢或隔日沖快速點火，宜設嚴格移動停利")
+                    guides_5d.append("前段無長莊底倉，短線資金快速點火，宜設嚴格移動停利")
 
         df_5d["momentum_tag"] = m_tags_5d
         df_5d["momentum_ratio_pct"] = ratios_5d

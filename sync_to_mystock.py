@@ -25,6 +25,7 @@ import ssl
 
 import pandas as pd
 import numpy as np
+import duckdb
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -261,7 +262,73 @@ def prepare_chip_payloads(
     # 執行跨週期主力動能加速度比對 (5日 vs 10日 節奏穿透)
     enrich_cross_period_momentum(period_dfs.get(5), period_dfs.get(10), period_dfs.get(20))
 
+    # ★ 巨鯨零盲區穿透補齊：確保 5d 淨買超金額前 25 大的百億權值巨鯨，其 10d 與 20d 真實數據不受純度門檻誤殺，一併寫入戰情室
+    df_5d = period_dfs.get(5, pd.DataFrame())
+    top_whales_5d = df_5d.sort_values(by="net_amt_yi", ascending=False).head(25) if not df_5d.empty else pd.DataFrame()
+    whale_patch_rows = []
+    if not top_whales_5d.empty:
+        for target_p, p_files in [(10, files_10d), (20, files_20d)]:
+            df_target = period_dfs.get(target_p, pd.DataFrame())
+            existing_pairs = set(zip(df_target["symbol"].astype(str), df_target["broker_id"].astype(str))) if not df_target.empty else set()
+            missing_whales = [
+                (str(r["symbol"]), str(r["broker_id"]), str(r.get("stock_name", "")), str(r.get("market", "上市")), str(r.get("broker_name", "")))
+                for _, r in top_whales_5d.iterrows()
+                if (str(r["symbol"]), str(r["broker_id"])) not in existing_pairs
+            ]
+            if missing_whales and p_files:
+                try:
+                    f_norm = [f.replace("\\", "/") for f in p_files]
+                    where_clauses = " OR ".join([f"(symbol = '{s}' AND broker_id = '{b}')" for s, b, _, _, _ in missing_whales])
+                    sql_patch = f"""
+                    SELECT 
+                        symbol, 
+                        broker_id, 
+                        ROUND(SUM(buy_vol - sell_vol), 1) as net_vol_sheets,
+                        ROUND(SUM(buy_amt - sell_amt) / 100000.0, 2) as net_amt_yi,
+                        ROUND((SUM(buy_amt) * 1000.0) / NULLIF(SUM(buy_vol), 0), 2) as buy_avg_price,
+                        ROUND(SUM(buy_vol) * 100.0 / NULLIF(SUM(buy_vol + sell_vol), 0), 1) as buy_purity_pct
+                    FROM read_parquet({f_norm})
+                    WHERE {where_clauses}
+                    GROUP BY symbol, broker_id
+                    """
+                    patch_df = duckdb.query(sql_patch).to_df()
+                    meta_dict = { (s, b): (sname, mkt, bname) for s, b, sname, mkt, bname in missing_whales }
+                    for _, pr in patch_df.iterrows():
+                        psym = str(pr["symbol"])
+                        pbid = str(pr["broker_id"])
+                        sname, mkt, bname = meta_dict.get((psym, pbid), ("", "上市", ""))
+                        amt = float(pr["net_amt_yi"])
+                        vol = float(pr["net_vol_sheets"])
+                        purity = float(pr["buy_purity_pct"]) if pd.notna(pr["buy_purity_pct"]) else 0.0
+                        b_price = float(pr["buy_avg_price"]) if pd.notna(pr["buy_avg_price"]) else None
+                        whale_patch_rows.append({
+                            "trade_date": actual_date,
+                            "period_days": int(target_p),
+                            "symbol": psym,
+                            "stock_name": sname,
+                            "market": mkt,
+                            "broker_id": pbid,
+                            "broker_name": bname,
+                            "net_amt_yi": amt,
+                            "net_vol_sheets": vol,
+                            "buy_avg_price": b_price,
+                            "close_price": None,
+                            "cost_deviation_pct": None,
+                            "buy_purity_pct": purity,
+                            "concentration_pct": None,
+                            "backtest_win_rate": None,
+                            "backtest_avg_return_pct": None,
+                            "persona_tag": "💎 長莊底倉" if target_p >= 20 else "🌊 雙週波段",
+                            "action_guide": "主力多週期持續重押鎖碼，屬中長線機構部位，沿均線順勢持有",
+                            "short_margin_ratio_pct": margin_map.get(psym),
+                            "large_shareholder_pct": tdcc_map.get(psym)
+                        })
+                    print(f"[✓] 成功為 {target_p} 日週期穿透補齊 {len(patch_df)} 檔百億巨鯨真實底倉數據！")
+                except Exception as _pe:
+                    print(f"[!] 巨鯨底倉補齊異常 ({target_p}d): {_pe}")
+
     accum_rows = []
+    accum_rows.extend(whale_patch_rows)
     for p in [5, 10, 20, 60]:
         df_p = period_dfs.get(p, pd.DataFrame())
         if not df_p.empty:
