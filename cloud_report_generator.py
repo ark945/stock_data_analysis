@@ -505,23 +505,23 @@ def generate_whale_matrix_html_section(
         try:
             f_norm = [f.replace("\\", "/") for f in files_10d]
             where_clauses = " OR ".join([f"(symbol = '{s}' AND broker_id = '{b}')" for s, b in missing_10d_pairs])
-            sql_patch_10 = f"SELECT symbol, broker_id, ROUND(SUM(net_amt) / 100000.0, 2) as net_amt_yi FROM read_parquet({f_norm}) WHERE {where_clauses} GROUP BY symbol, broker_id"
+            sql_patch_10 = f"SELECT symbol, broker_id, ROUND(SUM(buy_amt - sell_amt) / 100000.0, 2) as net_amt_yi FROM read_parquet({f_norm}) WHERE {where_clauses} GROUP BY symbol, broker_id"
             df_patch_10 = duckdb.query(sql_patch_10).to_df()
             for _, pr in df_patch_10.iterrows():
                 map_10d[(str(pr["symbol"]), str(pr["broker_id"]))] = float(pr["net_amt_yi"])
         except Exception as _e:
-            pass
+            print(f"[!] 郵件巨鯨 10d 穿透異常: {_e}")
 
     if files_20d and missing_20d_pairs:
         try:
             f_norm = [f.replace("\\", "/") for f in files_20d]
             where_clauses = " OR ".join([f"(symbol = '{s}' AND broker_id = '{b}')" for s, b in missing_20d_pairs])
-            sql_patch_20 = f"SELECT symbol, broker_id, ROUND(SUM(net_amt) / 100000.0, 2) as net_amt_yi FROM read_parquet({f_norm}) WHERE {where_clauses} GROUP BY symbol, broker_id"
+            sql_patch_20 = f"SELECT symbol, broker_id, ROUND(SUM(buy_amt - sell_amt) / 100000.0, 2) as net_amt_yi FROM read_parquet({f_norm}) WHERE {where_clauses} GROUP BY symbol, broker_id"
             df_patch_20 = duckdb.query(sql_patch_20).to_df()
             for _, pr in df_patch_20.iterrows():
                 map_20d[(str(pr["symbol"]), str(pr["broker_id"]))] = float(pr["net_amt_yi"])
         except Exception as _e:
-            pass
+            print(f"[!] 郵件巨鯨 20d 穿透異常: {_e}")
 
     rows_html = ""
     for idx, (_, row) in enumerate(whale_df.iterrows()):
