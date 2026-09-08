@@ -10,7 +10,8 @@
 5. 跨股同步布局偵測：同一分點短期間同時點火多檔個股
 """
 
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Optional
 
 import duckdb
 import pandas as pd
@@ -19,8 +20,53 @@ import numpy as np
 from find_similar_cases import get_stock_name_map, get_stock_market_map, get_broker_name_map
 
 
+def is_valid_parquet(file_path: str, min_rows: int = 1) -> bool:
+    """檢查 Parquet 檔案是否有效且含有資料行數 (排除假日/空檔案干擾 Schema 推斷)"""
+    try:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) < 1000:
+            return False
+        import pyarrow.parquet as pq
+        meta = pq.read_metadata(file_path)
+        return meta.num_rows >= min_rows
+    except Exception:
+        return False
+
+
 def _norm(files: List[str]) -> List[str]:
     return [f.replace("\\", "/") for f in files]
+
+
+def safe_load_close_prices(close_price_files: List[str]) -> pd.DataFrame:
+    """安全載入收盤價：過濾無效空檔，使用 union_by_name=true，並附帶 Arrow/Pandas 降級兜底"""
+    if not close_price_files:
+        return pd.DataFrame()
+    valid_files = [f for f in close_price_files if is_valid_parquet(f)]
+    if not valid_files:
+        return pd.DataFrame()
+    try:
+        price_sql = f"""
+            SELECT CAST(symbol AS VARCHAR) AS symbol,
+                   SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date,
+                   CAST(close AS DOUBLE) AS close
+            FROM read_parquet({_norm(valid_files)}, union_by_name=true)
+            WHERE symbol IS NOT NULL AND close IS NOT NULL
+        """
+        return duckdb.query(price_sql).to_df()
+    except Exception as e:
+        print(f"[!] DuckDB 批次讀取收盤價異常 ({e})，啟動自動降級安全載入模式...")
+        dfs = []
+        for f in valid_files:
+            try:
+                tdf = pd.read_parquet(f, columns=["symbol", "trade_date", "close"])
+                if not tdf.empty:
+                    tdf["symbol"] = tdf["symbol"].astype(str)
+                    tdf["trade_date"] = tdf["trade_date"].astype(str).str[:10]
+                    tdf["close"] = pd.to_numeric(tdf["close"], errors="coerce")
+                    tdf = tdf.dropna(subset=["symbol", "close"])
+                    dfs.append(tdf[["symbol", "trade_date", "close"]])
+            except Exception:
+                continue
+        return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
 def detect_reversal_warning(
@@ -40,7 +86,7 @@ def detect_reversal_warning(
             SUM(net_vol) / 1000.0 AS recent_net_vol_sheets,
             SUM(net_amt) / 100000.0 AS recent_net_amt_yi,
             SUM(sell_vol) / 1000.0 AS recent_sell_vol_sheets
-        FROM read_parquet({_norm(recent_files)})
+        FROM read_parquet({_norm(recent_files)}, union_by_name=true)
         GROUP BY symbol, broker_id
     """
     recent_df = duckdb.query(sql).to_df()
@@ -82,7 +128,7 @@ def detect_wash_trading(
         SELECT symbol, broker_id, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date,
             SUM(buy_vol) / 1000.0 AS buy_vol_sheets,
             SUM(sell_vol) / 1000.0 AS sell_vol_sheets
-        FROM read_parquet({_norm(files)})
+        FROM read_parquet({_norm(files)}, union_by_name=true)
         WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
         GROUP BY symbol, broker_id, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10)
         HAVING SUM(buy_vol) / 1000.0 >= {min_vol_sheets} AND SUM(sell_vol) / 1000.0 >= {min_vol_sheets}
@@ -198,7 +244,7 @@ def build_broker_profile(
         SELECT symbol, broker_id,
             SUM(buy_vol) AS buy_vol,
             SUM(buy_amt) AS buy_amt
-        FROM read_parquet({_norm(files)})
+        FROM read_parquet({_norm(files)}, union_by_name=true)
         WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
         GROUP BY symbol, broker_id
         HAVING SUM(buy_amt) / 100000.0 >= {min_buy_amt_yi}
@@ -211,11 +257,7 @@ def build_broker_profile(
     df["buy_amt_yi"] = (df["buy_amt"] / 100000.0).round(2)
 
     if close_price_files:
-        price_sql = f"""
-            SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close
-            FROM read_parquet({_norm(close_price_files)})
-        """
-        price_df = duckdb.query(price_sql).to_df()
+        price_df = safe_load_close_prices(close_price_files)
         if not price_df.empty:
             latest_close = price_df.sort_values("trade_date").groupby("symbol")["close"].last().rename("latest_close").reset_index()
             df = df.merge(latest_close, on="symbol", how="left")
@@ -291,7 +333,7 @@ def detect_price_volume_divergence(
             SUM(sell_vol) / 1000.0 AS sell_vol_sheets,
             SUM(net_amt) / 100000.0 AS net_amt_yi,
             SUM(buy_vol) * 100.0 / NULLIF(SUM(buy_vol) + SUM(sell_vol), 0) AS buy_ratio_pct
-        FROM read_parquet({_norm(files)})
+        FROM read_parquet({_norm(files)}, union_by_name=true)
         WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
         GROUP BY symbol, broker_id
         HAVING ABS(SUM(net_amt) / 100000.0) >= {min_net_amt_yi}
@@ -301,11 +343,7 @@ def detect_price_volume_divergence(
         return df
     df["buy_ratio_pct"] = df["buy_ratio_pct"].round(1)
 
-    price_sql = f"""
-        SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close
-        FROM read_parquet({_norm(close_price_files)})
-    """
-    price_df = duckdb.query(price_sql).to_df()
+    price_df = safe_load_close_prices(close_price_files)
     if price_df.empty:
         return pd.DataFrame()
     price_df.sort_values("trade_date", inplace=True)
@@ -378,7 +416,7 @@ def detect_cross_stock_sync_buying(
         baseline_sql = f"""
             WITH agg AS (
                 SELECT symbol, broker_id, SUM(buy_amt) / 100000.0 AS buy_amt_yi
-                FROM read_parquet({_norm(baseline_files)})
+                FROM read_parquet({_norm(baseline_files)}, union_by_name=true)
                 WHERE NOT (symbol LIKE '00%') AND symbol NOT IN ('ZZZZ', 'REG99', 'OTC99', 'Y9999')
                 GROUP BY symbol, broker_id
                 HAVING SUM(buy_amt) / 100000.0 >= 0.05

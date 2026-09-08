@@ -74,7 +74,7 @@ def run_heavy_accumulation_analysis(
             sell_amt,
             net_amt,
             CASE WHEN net_vol > 0 THEN 1 ELSE 0 END AS is_buy_day
-        FROM read_parquet({absr1_files})
+        FROM read_parquet({absr1_files}, union_by_name=true)
         WHERE (buy_amt >= 100 OR sell_amt >= 100){extra_sql_filter}
     ),
     daily_trades AS (
@@ -200,10 +200,32 @@ def run_heavy_accumulation_analysis(
     avg_return_pct = None
     if close_price_files:
         close_files_norm = [f.replace("\\", "/") for f in close_price_files]
-        price_df = duckdb.query(f"""
-            SELECT symbol, SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date, close, high, low, volume
-            FROM read_parquet({close_files_norm})
-        """).to_df()
+        try:
+            price_df = duckdb.query(f"""
+                SELECT CAST(symbol AS VARCHAR) AS symbol,
+                       SUBSTRING(CAST(trade_date AS VARCHAR), 1, 10) AS trade_date,
+                       CAST(close AS DOUBLE) AS close,
+                       CAST(high AS DOUBLE) AS high,
+                       CAST(low AS DOUBLE) AS low,
+                       CAST(volume AS DOUBLE) AS volume
+                FROM read_parquet({close_files_norm}, union_by_name=true)
+                WHERE symbol IS NOT NULL
+            """).to_df()
+        except Exception as e:
+            print(f"[!] DuckDB 批次載入收盤價異常 ({e})，啟動 Arrow/Pandas 安全讀取模式...")
+            dfs = []
+            for f in close_price_files:
+                try:
+                    tdf = pd.read_parquet(f, columns=["symbol", "trade_date", "close", "high", "low", "volume"])
+                    if not tdf.empty:
+                        tdf["symbol"] = tdf["symbol"].astype(str)
+                        tdf["trade_date"] = tdf["trade_date"].astype(str).str[:10]
+                        for col in ["close", "high", "low", "volume"]:
+                            tdf[col] = pd.to_numeric(tdf[col], errors="coerce")
+                        dfs.append(tdf)
+                except Exception:
+                    continue
+            price_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
         ignition_price = price_df.rename(columns={"trade_date": "ignition_date", "close": "ignition_close"})[["symbol", "ignition_date", "ignition_close"]]
         latest_price = price_df.rename(columns={"trade_date": "last_date", "close": "latest_close"})[["symbol", "last_date", "latest_close"]]

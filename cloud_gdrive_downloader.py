@@ -190,7 +190,18 @@ def download_recent_parquet_files(
         print(f"[✓] 下載完成: {tf['name']}")
         downloaded_paths.append(local_path)
 
-    return downloaded_paths
+    # 嚴格過濾排除空 Parquet 檔案
+    valid_paths = []
+    for p in downloaded_paths:
+        try:
+            import pyarrow.parquet as pq
+            if os.path.exists(p) and os.path.getsize(p) >= 1000 and pq.read_metadata(p).num_rows > 0:
+                valid_paths.append(p)
+            else:
+                print(f"[!] 排除空/無交易資料分點檔案: {os.path.basename(p)}")
+        except Exception:
+            valid_paths.append(p)
+    return valid_paths
 
 
 def download_recent_close_price_files(
@@ -249,8 +260,20 @@ def download_recent_close_price_files(
                 status, done = downloader.next_chunk()
         downloaded_paths.append(local_path)
 
-    print(f"[✓] 收盤價檔案下載完成，共 {len(downloaded_paths)} 個檔案就緒。")
-    return downloaded_paths
+    # 嚴格過濾排除空 Parquet 檔案
+    valid_paths = []
+    for p in downloaded_paths:
+        try:
+            import pyarrow.parquet as pq
+            if os.path.exists(p) and os.path.getsize(p) >= 1000 and pq.read_metadata(p).num_rows > 0:
+                valid_paths.append(p)
+            else:
+                print(f"[!] 排除空/無交易資料收盤價檔案: {os.path.basename(p)}")
+        except Exception:
+            valid_paths.append(p)
+
+    print(f"[✓] 收盤價檔案下載完成，共 {len(valid_paths)} 個有效檔案就緒。")
+    return valid_paths
 
 
 def download_recent_files_by_pattern(

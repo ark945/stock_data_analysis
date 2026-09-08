@@ -112,6 +112,28 @@ def main():
         absr1_files = [f for f in absr1_files if extract_date_from_filename(os.path.basename(f)) <= args.date]
         close_files_all = [f for f in close_files_all if extract_date_from_filename(os.path.basename(f)) <= args.date]
 
+    def is_valid_parquet_file(file_path: str, min_rows: int = 1) -> bool:
+        """檢查 Parquet 檔案是否有效且含有資料行數 (排除假日/空檔案干擾 DuckDB Schema 推斷)"""
+        try:
+            if not os.path.exists(file_path) or os.path.getsize(file_path) < 1000:
+                return False
+            import pyarrow.parquet as pq
+            meta = pq.read_metadata(file_path)
+            return meta.num_rows >= min_rows
+        except Exception:
+            return False
+
+    # 嚴格過濾無效或空資料的 Parquet 檔案 (防止假日/休市/空爬取干擾 DuckDB Schema 推斷)
+    valid_absr1 = [f for f in absr1_files if is_valid_parquet_file(f)]
+    if len(valid_absr1) != len(absr1_files):
+        print(f"[!] 自動剔除 {len(absr1_files) - len(valid_absr1)} 個無效/空白分點 Parquet 檔案")
+        absr1_files = valid_absr1
+
+    valid_close = [f for f in close_files_all if is_valid_parquet_file(f)]
+    if len(valid_close) != len(close_files_all):
+        print(f"[!] 自動剔除 {len(close_files_all) - len(valid_close)} 個無效/空白收盤價 Parquet 檔案")
+        close_files_all = valid_close
+
     total_files = len(absr1_files)
     print(f"[✓] 共有 {total_files} 個交易日分點 Parquet 檔案就緒！")
     if close_files_all:
