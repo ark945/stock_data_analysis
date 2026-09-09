@@ -262,10 +262,22 @@ def prepare_chip_payloads(
     # 執行跨週期主力動能加速度比對 (5日 vs 10日 節奏穿透)
     enrich_cross_period_momentum(period_dfs.get(5), period_dfs.get(10), period_dfs.get(20))
 
+    # 預先載入最新收盤價映射，供巨鯨補齊計算真實成本偏離度
+    latest_close_map = {}
+    if close_files_all:
+        try:
+            latest_c_file = close_files_all[-1].replace("\\", "/")
+            c_df = duckdb.query(f"SELECT CAST(symbol AS VARCHAR) as symbol, CAST(close AS DOUBLE) as close FROM read_parquet('{latest_c_file}')").to_df()
+            for _, cr in c_df.iterrows():
+                if pd.notna(cr["close"]):
+                    latest_close_map[str(cr["symbol"])] = float(cr["close"])
+        except Exception as _ce:
+            print(f"[!] 讀取最新收盤價映射異常: {_ce}")
+
     # ★ 巨鯨零盲區穿透補齊：確保 5d 淨買超金額前 25 大的百億權值巨鯨，其 10d 與 20d 真實數據不受純度門檻誤殺，一併寫入戰情室
     df_5d = period_dfs.get(5, pd.DataFrame())
     top_whales_5d = df_5d.sort_values(by="net_amt_yi", ascending=False).head(25) if not df_5d.empty else pd.DataFrame()
-    whale_patch_rows = []
+    whale_patch_by_period: Dict[int, List[Dict[str, Any]]] = {10: [], 20: []}
     if not top_whales_5d.empty:
         for target_p, p_files in [(10, files_10d), (20, files_20d)]:
             df_target = period_dfs.get(target_p, pd.DataFrame())
@@ -301,7 +313,10 @@ def prepare_chip_payloads(
                         vol = float(pr["net_vol_sheets"])
                         purity = float(pr["buy_purity_pct"]) if pd.notna(pr["buy_purity_pct"]) else 0.0
                         b_price = float(pr["buy_avg_price"]) if pd.notna(pr["buy_avg_price"]) else None
-                        whale_patch_rows.append({
+                        c_price = latest_close_map.get(psym)
+                        cost_dev = round(((c_price - b_price) / b_price) * 100.0, 1) if (c_price is not None and b_price and b_price > 0) else None
+
+                        whale_patch_by_period[target_p].append({
                             "trade_date": actual_date,
                             "period_days": int(target_p),
                             "symbol": psym,
@@ -312,8 +327,8 @@ def prepare_chip_payloads(
                             "net_amt_yi": amt,
                             "net_vol_sheets": vol,
                             "buy_avg_price": b_price,
-                            "close_price": None,
-                            "cost_deviation_pct": None,
+                            "close_price": c_price,
+                            "cost_deviation_pct": cost_dev,
                             "buy_purity_pct": purity,
                             "concentration_pct": None,
                             "backtest_win_rate": None,
@@ -328,25 +343,30 @@ def prepare_chip_payloads(
                     print(f"[!] 巨鯨底倉補齊異常 ({target_p}d): {_pe}")
 
     accum_rows = []
-    accum_rows.extend(whale_patch_rows)
     for p in [5, 10, 20, 60]:
         df_p = period_dfs.get(p, pd.DataFrame())
+        added_in_period = set()
         if not df_p.empty:
             # 融合雙軌菁英：評分前 35 名 (中小型高純度飆股) ＋ 實體金額前 25 名 (百億級權值巨鯨)
+            # 重要：保留 top_by_score 在最前順序，確保按 id 遞增查詢時精準反映「川湖評分」榜首
             top_by_score = df_p.head(35)
             top_by_amt = df_p.sort_values(by="net_amt_yi", ascending=False).head(25)
             merged_candidates = pd.concat([top_by_score, top_by_amt]).drop_duplicates(subset=["symbol", "broker_id"])
 
             for _, r in merged_candidates.iterrows():
+                sym_k = str(r.get("symbol", ""))
+                bid_k = str(r.get("broker_id", ""))
+                added_in_period.add((sym_k, bid_k))
+
                 p_tag = str(r.get("momentum_tag")) if pd.notna(r.get("momentum_tag")) and r.get("momentum_tag") else ("💎 波段主力" if p >= 20 else "⚡ 短線主力")
                 a_guide = str(r.get("action_guide")) if pd.notna(r.get("action_guide")) and r.get("action_guide") else ("主力重押鎖碼，順勢跟隨" if p >= 20 else "短線點火爆量，注意開高震盪")
                 accum_rows.append({
                     "trade_date": actual_date,
                     "period_days": int(p),
-                    "symbol": str(r.get("symbol", "")),
+                    "symbol": sym_k,
                     "stock_name": str(r.get("stock_name", "")),
                     "market": str(r.get("market", "上市")),
-                    "broker_id": str(r.get("broker_id", "")),
+                    "broker_id": bid_k,
                     "broker_name": str(r.get("broker_name", "")),
                     "net_amt_yi": float(r.get("net_amt_yi", 0)),
                     "net_vol_sheets": float(r.get("net_vol_sheets", 0)),
@@ -359,9 +379,17 @@ def prepare_chip_payloads(
                     "backtest_avg_return_pct": float(r.get("backtest_avg_return_pct", 0)) if pd.notna(r.get("backtest_avg_return_pct")) else None,
                     "persona_tag": p_tag,
                     "action_guide": a_guide,
-                    "short_margin_ratio_pct": margin_map.get(str(r.get("symbol", "")), None),
-                    "large_shareholder_pct": tdcc_map.get(str(r.get("symbol", "")), None)
+                    "short_margin_ratio_pct": margin_map.get(sym_k, None),
+                    "large_shareholder_pct": tdcc_map.get(sym_k, None)
                 })
+
+        # 2. 針對該週期 (如 10d / 20d) 額外穿透補齊之巨鯨，追加在該週期尾部 (避免插隊破壞川湖評分榜)
+        if p in whale_patch_by_period:
+            for wr in whale_patch_by_period[p]:
+                pair_k = (wr["symbol"], wr["broker_id"])
+                if pair_k not in added_in_period:
+                    added_in_period.add(pair_k)
+                    accum_rows.append(wr)
 
     # 2. 主力出貨逃離下車表
     print("[2/4] 運算主力出貨逃離與散戶接盤下車表...")
